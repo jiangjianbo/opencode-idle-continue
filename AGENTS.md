@@ -57,11 +57,20 @@ opencode-idle-continue/
 │
 ├── src/
 │   ├── index.js                          ← 插件唯一入口。导出 { id, server }
-│   └── opencode-true-idle-detector.js    ← OpenCodeTrueIdleDetector 类（空闲检测）
+│   ├── opencode-true-idle-detector.js    ← OpenCodeTrueIdleDetector 类（空闲检测去抖状态机）
+│   └── wait-state.js                     ← WaitState 类（等待状态与退避）
+│
+├── src/__tests__/
+│   ├── opencode-true-idle-detector.test.js  ← 空闲检测状态机测试
+│   ├── prompt.test.js                       ← 提示词文件读取/热重载测试
+│   ├── file-watch.test.js                   ← 文件快照/变更检测测试
+│   ├── wait-state.test.js                   ← 等待状态与退避测试
+│   └── index.test.js                        ← 集成测试
 │
 ├── dist/
-│   ├── index.js                          ← bun build 打包产物（含 idle detector）
-│   └── package.json                      ← npm 包分发清单
+│   ├── index.js                          ← 构建产物
+│   ├── opencode-true-idle-detector.js    ← 构建产物
+│   └── wait-state.js                     ← 构建产物
 │
 ├── install-local.sh                      ← 构建 + 本地安装脚本
 ├── clean.sh                              ← 卸载脚本
@@ -89,6 +98,7 @@ mkdir -p dist && cp src/*.js dist/
 输出：
 - `dist/index.js` — 插件入口（与 `src/index.js` 一致）
 - `dist/opencode-true-idle-detector.js` — 空闲检测模块
+- `dist/wait-state.js` — 等待状态模块
 - `dist/package.json` — npm 包分发清单
 
 不依赖 bun，node 和 bun 均可使用。
@@ -127,17 +137,123 @@ OpenCode 通过插件缓存机制从 npm 拉取安装。
 bash clean.sh
 ```
 
-## 行为细节
+## 组件关系
 
-1. 插件启动后立即开始监控空闲状态
-2. 每次使用 `prompt_file` 时检查文件是否已修改。未修改则使用缓存内容，已修改则重新读入并更新缓存（热重载）
-3. 检测到空闲时，读取 `prompt_file` 的当前内容作为提示词发送
-4. 发送后检查 `watch_files` 中所有文件是否有变化（文件大小或修改时间）
-5. 任一文件有变化 → 重置空闲计数，恢复正常监控
-6. 所有文件无变化 → 进入等待状态，开始计时
-7. 等待状态下每 `check_interval_minutes` 分钟检测一次，若仍空闲则发送提示词
-8. 连续 `max_idle_cycles` 次检测到空闲 → `check_interval_minutes` 翻倍
-9. 任意时刻检测到文件变化 → 间隔重置为初始值，退出等待状态
+### OpenCodeTrueIdleDetector ↔ WaitState 协作
+
+`OpenCodeTrueIdleDetector` 是直接挂接 opencode 事件系统的入口层，负责从原始事件流中提取信号并通过回调通知 `WaitState`。`WaitState` 是复杂状态管理层，负责所有状态维持、定时调度和退避逻辑。
+
+```
+opencode 事件流
+    │
+    ├── event hook (session.status / session.idle / permission.* / question.*)
+    │       │
+    │       ▼
+    │   OpenCodeTrueIdleDetector.handleEvent()
+    │       │
+    │       ├── onIdle(sessionID)          → WaitState.onIdle()
+    │       ├── onIdleExit(sessionID)      → WaitState.onIdleExit()
+    │
+    └── chat.message hook
+            │
+            ▼
+        OpenCodeTrueIdleDetector.handleChatMessage(input, output)
+            │
+            ├── 检测到 MessageAbortedError   → onUserInterrupt(sessionID) → WaitState.onUserInterrupt()
+            ├── 检测到用户手动输入            → onUserInput(sessionID)    → WaitState.onUserInput()
+```
+
+### 回调总览
+
+| 回调 | 触发方 | 接收方 | 说明 |
+|------|--------|--------|------|
+| `onIdle(sessionID)` | Detector (去抖确认后) | WaitState | 进入等待状态 |
+| `onIdleExit(sessionID)` | Detector (idle→busy) | WaitState | 退出等待状态 |
+| `onUserInterrupt(sessionID)` | Detector (MessageAbortedError) | WaitState | 用户中断 AI 回复 |
+| `onUserInput(sessionID)` | Detector (用户手动输入) | WaitState | 用户手动发送消息 |
+
+### 中断状态管理
+
+`WaitState` 内部维护 `#interrupted` 私有字段，由 `onUserInterrupt` 设置、`onUserInput` 清除：
+- `#interrupted = true`：`onIdle` 跳过不处理，定时器到期后直接 reset
+- `#interrupted = false`：正常处理
+- `sendPrompt` 回调也会在 `#interrupted` 为 true 时跳过发送
+- **`promptInFlight` 保护**：Detector 内部维护 `#promptInFlight`，插件通过 `session.prompt()` 发送提示词期间该标记为 true，此时收到的 user role 消息不会触发 `onUserInput`，避免插件自身消息清除中断状态
+
+## 事件流
+
+### idle 进入
+
+```
+session.status({type:'idle'})
+  → OpenCodeTrueIdleDetector
+    → 200ms 去抖
+    → TRUE_IDLE
+    → onIdle(sessionID)
+      → WaitState.onIdle()
+        → [interrupted?] → 跳过
+        → [active?] → 幂等跳过
+        → sendPrompt(promptContent)        ← 读取 prompt_file 发送
+        → prompt() 阻塞返回
+        → checkFilesChanged()
+          → 有变化 → waitState.reset()
+          → 无变化 → waitState.enter()
+```
+
+### idle 退出
+
+```
+session.status({type:'busy'})
+  → OpenCodeTrueIdleDetector
+    → 取消 pending 去抖（DEBOUNCE）
+    → 检测到 idle→busy 转换
+    → onIdleExit(sessionID)
+      → WaitState.onIdleExit()
+        → waitState.reset()
+        → 重新快照 watch_files（文件状态检查点重置）
+```
+
+### 用户中断
+
+```
+chat.message({role:'assistant', error:{name:'MessageAbortedError'}})
+  → OpenCodeTrueIdleDetector.handleChatMessage()
+    → 日志 USER_INTERRUPT
+    → onUserInterrupt(sessionID)
+      → WaitState.onUserInterrupt()
+        → #interrupted = true
+        → waitState.reset()                 ← 清理定时器和状态
+```
+
+### 用户手动输入（清除中断）
+
+```
+chat.message({role:'user'})
+  → OpenCodeTrueIdleDetector.handleChatMessage()
+    → [promptInFlight?] → 跳过（插件自身消息）
+    → 日志 USER_INPUT
+    → onUserInput(sessionID)
+      → WaitState.onUserInput()
+        → #interrupted = false             ← 恢复空闲检测
+```
+
+### 等待状态循环
+
+```
+WaitState.enter()
+  → schedule(interval)
+    → setTimeout 触发
+    → onFire(waitState)
+      → [interrupted?] → waitState.reset() → 退出
+      → checkFilesChanged()
+        → 有变化 → waitState.reset() → 退出
+      → sessionStatus !== 'idle'
+        → waitState.reset() → 退出
+      → sendPrompt()
+      → idleCycles++
+      → idleCycles >= max_idle_cycles? → interval *= 2, idleCycles=0
+      → schedule(next_interval)
+```
 
 ## 实现规范
 
@@ -153,8 +269,24 @@ bash clean.sh
 - 使用 JavaScript 私有字段（`#`）封装状态，防止外部篡改
 - `scheduleCheck` 用 `setTimeout` 实现 200ms 去抖
 - `onIdle` 回调在去抖确认后调用，但回调本身可以是 `async`
+- `onIdleExit` 回调在状态从 idle 切换到 busy 时同步调用
+- `onUserInterrupt` 回调在检测到 `MessageAbortedError` 时调用
+- `onUserInput` 回调在检测到用户手动输入时调用
 - `handleEvent` 是**同步方法**，仅操作状态机和定时器，不处理回调结果
+- `handleChatMessage(input, output)` 处理 `chat.message` hook 数据，检测用户中断和手动输入
+- `setPromptInFlight(v)` 标记插件是否正在发送 prompt，防止自身消息触发 `onUserInput`
 - `dispose` 清理 pending 定时器
+
+### WaitState 类规范 (`src/wait-state.js`)
+
+- 使用 JavaScript 私有字段封装状态
+- `onIdle(sessionID)` 进入等待状态（幂等，已激活时无操作；中断状态时跳过）
+- `onIdleExit()` 重置所有状态，重新快照文件
+- `onUserInterrupt(sessionID)` 设置 `#interrupted = true`，重置定时和计数
+- `onUserInput(sessionID)` 清除 `#interrupted`，恢复空闲检测
+- `reset()` 重置所有状态到初始值（定时器、计数、间隔，不重置 `#interrupted`）
+- `dispose()` 清理 pending 定时器
+- 内部 `#sendAndCheck` 有 `#active` 守卫，防止 reset 后继续执行
 
 ### Logger
 
@@ -172,6 +304,7 @@ bash clean.sh
 | `IDLE` | session.idle 事件 |
 | `CANDIDATE` | 进入 idle 但尚未去抖确认 |
 | `TRUE_IDLE` | **去抖后确认真正空闲** |
+| `ON_IDLE_EXIT` | idle→busy 转换 |
 | `SKIP` | 去抖后条件不满足，或插件未启用 |
 | `DEBOUNCE` | 去抖被 busy 取消 |
 | `PERM` | permission.asked/replied |
@@ -186,6 +319,7 @@ bash clean.sh
 | `ON_IDLE` | onIdle 回调触发 |
 | `USER_INPUT` | 用户消息 |
 | `AI_REPLY` | AI 回复 |
+| `USER_INTERRUPT` | 用户中断 AI 回复（MessageAbortedError）|
 | `DISPOSE` | 插件关闭 |
 
 ### 发送机制
@@ -207,17 +341,122 @@ TRUE_IDLE → onIdle(sessionID)
   → sendPrompt(promptContent)
   → prompt() 返回
   → checkFilesChanged()
-    → 有变化 → resetWaitState() (idleCycles=0, interval=初始)
-    → 无变化 → enterWaitState()
-      → scheduleWaitCheck(interval)
-        → 定时器触发:
-          → 文件变化? → resetWaitState()
-          → 非 idle? → resetWaitState()
-          → 仍 idle → sendPrompt() → 检查文件
-            → 无变化 → idleCycles++
-              → idleCycles >= max_idle_cycles? → interval *= 2, idleCycles=0
-            → scheduleWaitCheck(interval)
+    → 有变化 → waitState.reset()
+    → 无变化 → waitState.enter()
+      → waitState 定时器触发:
+        → 文件变化? → waitState.reset()
+        → 非 idle? → waitState.reset()
+        → 仍 idle → sendPrompt() → recordCycle(fileChanged)
+          → recordCycle 返回 false → waitState.reset()
+          → recordCycle 返回 true → schedule(interval)
 ```
+
+### idle-exit 重置
+
+```
+onIdleExit(sessionID)  ← 同步调用
+  → waitState.reset()
+  → 遍历 watch_files 重新快照（fileSnapshots 更新）
+```
+
+## 单元测试
+
+测试框架使用 vitest，使用 `vi.useFakeTimers()` 控制时间，用临时目录 mock 文件系统。
+
+### 测试文件分布
+
+| 文件 | 测试层次 | 说明 |
+|------|----------|------|
+| `opencode-true-idle-detector.test.js` | 单元测试 | OpenCodeTrueIdleDetector 状态机 |
+| `prompt.test.js` | 单元测试 | 提示词文件读取与热重载 |
+| `file-watch.test.js` | 单元测试 | 文件快照与变更检测 |
+| `wait-state.test.js` | 单元测试 | WaitState 类等待与退避 |
+| `index.test.js` | 集成测试 | 全链路：各组件通过插件入口协作 |
+
+### OpenCodeTrueIdleDetector 单元测试
+
+通过公共接口（构造函数、`handleEvent`、`dispose`、`activeSessionID` getter）测试状态机逻辑，`onIdle` / `onIdleExit` mock 回调用于验证行为。
+
+| # | 用例 | 输入 | 预期行为 |
+|---|------|------|----------|
+| 1 | **基本空闲检测** | `session.status({type:'idle'})` | 200ms 去抖后 `onIdle` 被调用 1 次 |
+| 2 | **busy 取消去抖** | idle → 50ms 后 busy | 去抖被取消，`onIdle` 未被调用 |
+| 3 | **idle → busy → idle 重置去抖** | idle → 50ms → busy → idle | 第一个去抖取消，第二个重新调度，仅第二个到期时调用 onIdle |
+| 4 | **permission.asked 阻止空闲** | idle → permission.asked | 去抖到期条件不满足，`onIdle` 未被调用 |
+| 5 | **permission.replied 恢复空闲** | idle → asked → replied | replied 重新调度去抖，到期后 `onIdle` 被调用 |
+| 6 | **question.asked 阻止空闲** | idle → question.asked | 去抖到期条件不满足，`onIdle` 未被调用 |
+| 7 | **question.replied2 恢复空闲** | idle → asked → replied2 | replied2 重新调度，到期后 `onIdle` 被调用 |
+| 8 | **question.rejected2 恢复空闲** | idle → asked → rejected2 | 同上 |
+| 9 | **session.idle 更新 sessionID** | 连续两次不同 sessionID | `activeSessionID` 返回最后一次 |
+| 10 | **dispose 清理定时器** | idle → 未到 200ms → dispose | pending 定时器清除，`onIdle` 永不被调用 |
+| 11 | **idle→busy 触发 onIdleExit** | idle → 立即 busy | `onIdleExit` 被同步调用 1 次，参数 sessionID 正确 |
+| 12 | **onIdleExit 不触发于 idle→idle** | 连续两次 idle | `onIdleExit` 未被调用 |
+| 13 | **MessageAbortedError 触发 onUserInterrupt** | `handleChatMessage` 含 `error.name='MessageAbortedError'` | `onUserInterrupt` 被调用 1 次 |
+| 14 | **正常 assistant 消息不触发中断** | `handleChatMessage` 无 error | `onUserInterrupt` 未被调用 |
+| 15 | **用户消息触发 onUserInput** | `handleChatMessage` 含 `role:'user'` | `onUserInput` 被调用 1 次 |
+| 16 | **promptInFlight 阻止 onUserInput** | `setPromptInFlight(true)` 后发送用户消息 | `onUserInput` 未被调用 |
+
+### Prompt 模块测试
+
+测试 `loadPromptFile` 函数：文件读取、mtime 缓存、空文件、不存在文件。
+
+| # | 用例 | 输入 | 预期行为 |
+|---|------|------|----------|
+| 13 | **读取存在的文件** | 文件内容 "hello" | 返回 `{ content: 'hello', mtime: number }` |
+| 14 | **读取不存在的文件** | 路径不存在 | 返回 `{ content: '', mtime: 0 }` |
+| 15 | **读取空文件** | 文件内容 "" | 返回 `{ content: '', mtime: number }` |
+
+### File Watch 模块测试
+
+测试 `readFileSnapshot` 和 `fileChanged`：文件快照创建与变更比较。
+
+| # | 用例 | 输入 | 预期行为 |
+|---|------|------|----------|
+| 16 | **读取存在的文件快照** | 存在的路径 | 返回 `{ mtime: number, size: number }` |
+| 17 | **读取不存在的文件快照** | 路径不存在 | 返回 `null` |
+| 18 | **快照比较：内容未变** | 相同文件两次快照 | `fileChanged` 返回 `false` |
+| 19 | **快照比较：内容已变** | 修改文件后再次快照 | `fileChanged` 返回 `true` |
+| 20 | **快照比较：一方为 null** | 新出现或消失的文件 | `fileChanged` 返回 `true` |
+| 21 | **快照比较：双方为 null** | 都不存在的文件 | `fileChanged` 返回 `false` |
+
+### WaitState 类单元测试
+
+测试等待状态的关键路径。
+
+| # | 用例 | 输入 | 预期行为 |
+|---|------|------|----------|
+| 22 | **enter 后 active 为 true** | `enter()` | `active` getter 返回 `true` |
+| 23 | **enter 幂等** | 连续两次 `enter()` | `onFire` 仅被调度一次 |
+| 24 | **reset 清除状态** | enter → reset | `active` 为 false，计数/间隔恢复初始 |
+| 25 | **timer 触发 onFire** | enter → advance 间隔 | `onFire` 被调用 1 次 |
+| 26 | **recordCycle 递增 idleCycles** | 连续 recordCycle(false) N 次 | N 次后 idlCycles == N（小于 max） |
+| 27 | **recordCycle 超过 max 后翻倍** | recordCycle(false) 达到 max 次 | 间隔翻倍，idleCycles 重置为 0 |
+| 28 | **recordCycle 文件变化时返回 false** | recordCycle(true) | 返回 false，不继续调度 |
+| 29 | **dispose 清理定时器** | enter → dispose | 定时器清除，onFire 不会被调用 |
+| 30 | **reset 后 enter 重新激活** | enter → reset → enter | 重新开始，初始间隔 |
+| 31 | **onUserInterrupt 阻止 onIdle** | onUserInterrupt → onIdle | onIdle 跳过，不调用 sendPrompt |
+| 32 | **onUserInput 恢复 onIdle** | onUserInterrupt → onUserInput → onIdle | onIdle 正常触发 |
+| 33 | **中断重置活跃等待状态** | onIdle(enter) → onUserInterrupt | 定时器被清除，不再继续 |
+| 34 | **中断后定时器不发送 prompt** | onIdle → 定时器 → onUserInterrupt → 再定时器 | 中断后的定时器不发送 |
+
+### 集成测试
+
+通过 mock `client.session.prompt()`、临时文件系统和 `OpenCodeTrueIdleDetector` 的真实实例，测试全链路协作。
+
+| # | 用例 | 输入 | 预期行为 |
+|---|------|------|----------|
+| 31 | **idle→发送 prompt→文件未变→等待状态** | idle 事件 | prompt 发送 1 次；等待状态激活 |
+| 32 | **idle→发送 prompt→文件已变→重置** | idle 事件，watch_file 已不同 | prompt 发送 1 次；不进入等待（可再次 idle） |
+| 33 | **等待状态文件变化 → 退出等待** | 等待状态中，修改 watch_file，触发 wait timer | waitState.reset() 被调用 |
+| 34 | **等待状态 idle-exit → 退出等待** | 等待状态中发送 busy 事件 | onIdleExit → waitState.reset() + 文件重新快照 |
+| 35 | **等待状态周期 → 仍 idle → 重新发送 prompt** | 等待状态定时器超时 | prompt 再次被发送 |
+| 36 | **连续 max 次 idle → 间隔翻倍** | 等待状态路径走完 max 次 | 5 次后 currentInterval 从 30→60 分钟 |
+| 37 | **空 prompt 文件 → 跳过发送** | prompt.md 为空 | prompt 未被调用 |
+| 38 | **插件 disabled → 跳过** | enabled:false | prompt 未被调用 |
+| 39 | **prompt_file 热重载** | 等待状态中修改 prompt.md | 下次 onFire 时 HOT_RELOAD，新内容被发送 |
+| 40 | **dispose 清理所有** | 等待状态 → dispose() | 所有定时器清除，无回调 |
+| 41 | **用户中断 → idle 跳过** | idle → MessageAbortedError → idle | 中断后 idle 不触发 prompt |
+| 42 | **用户手动输入 → 恢复 idle** | 中断 → 用户消息 → idle | 手动输入后 idle 正常触发 |
 
 ### 关键约束
 

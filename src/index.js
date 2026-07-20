@@ -2,6 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { homedir } from 'node:os';
 import { OpenCodeTrueIdleDetector } from './opencode-true-idle-detector.js';
+import { FileWatch, WaitState } from './wait-state.js';
+import { readFileSnapshot, fileChanged, loadPromptFile } from './file-utils.js';
+
+export { readFileSnapshot, fileChanged, loadPromptFile };
 
 const DEFAULT_CONFIG = {
   prompt_file: 'idle-prompt.md',
@@ -48,32 +52,6 @@ function loadConfig(directory) {
   }
 }
 
-function readFileSnapshot(filePath) {
-  try {
-    const stat = fs.statSync(filePath);
-    return { mtime: stat.mtimeMs, size: stat.size };
-  } catch {
-    return null;
-  }
-}
-
-function fileChanged(snapshot, filePath) {
-  const current = readFileSnapshot(filePath);
-  if (current === null && snapshot === null) return false;
-  if (current === null || snapshot === null) return true;
-  return current.mtime !== snapshot.mtime || current.size !== snapshot.size;
-}
-
-function loadPromptFile(filePath) {
-  try {
-    const stat = fs.statSync(filePath);
-    const content = fs.readFileSync(filePath, 'utf-8');
-    return { content, mtime: stat.mtimeMs };
-  } catch {
-    return { content: '', mtime: 0 };
-  }
-}
-
 const server = async (input) => {
   const { directory, client } = input;
   const logDir = path.join(directory, '.log');
@@ -83,107 +61,19 @@ const server = async (input) => {
   log('INIT', `Config loaded: ${JSON.stringify(config)}`);
 
   const resolvedPromptPath = path.resolve(directory, config.prompt_file);
-  let promptCache = loadPromptFile(resolvedPromptPath);
+  const watchPaths = config.watch_files.map(f => path.resolve(directory, f));
 
-  const fileSnapshots = new Map();
-  for (const f of config.watch_files) {
-    const fp = path.resolve(directory, f);
-    fileSnapshots.set(fp, readFileSnapshot(fp));
-  }
-
-  const waitState = {
-    active: false,
-    idleCycles: 0,
-    currentInterval: config.check_interval_minutes,
-    timer: null,
-  };
+  const fileWatch = new FileWatch({
+    promptFilePath: resolvedPromptPath,
+    watchFilePaths: watchPaths,
+    log,
+  });
 
   let sessionStatus = 'idle';
   let activeSessionID = null;
 
-  function getPromptContent() {
-    const loaded = loadPromptFile(resolvedPromptPath);
-    if (loaded.mtime !== promptCache.mtime) {
-      promptCache = loaded;
-      log('HOT_RELOAD', `Prompt file reloaded: ${resolvedPromptPath}`);
-    }
-    return promptCache.content;
-  }
-
-  function checkFilesChanged() {
-    let changed = false;
-    for (const [fp, snapshot] of fileSnapshots) {
-      if (fileChanged(snapshot, fp)) {
-        fileSnapshots.set(fp, readFileSnapshot(fp));
-        changed = true;
-      }
-    }
-    return changed;
-  }
-
-  function resetWaitState() {
-    if (waitState.timer) {
-      clearTimeout(waitState.timer);
-      waitState.timer = null;
-    }
-    waitState.active = false;
-    waitState.idleCycles = 0;
-    waitState.currentInterval = config.check_interval_minutes;
-    log('RESET', 'Wait state reset to initial');
-  }
-
-  function scheduleWaitCheck() {
-    if (waitState.timer) clearTimeout(waitState.timer);
-    const ms = waitState.currentInterval * 60 * 1000;
-    waitState.timer = setTimeout(async () => {
-      waitState.timer = null;
-
-      if (checkFilesChanged()) {
-        log('WAIT', 'File change detected, exiting wait state');
-        resetWaitState();
-        return;
-      }
-
-      if (sessionStatus !== 'idle') {
-        log('WAIT', `Not idle (status=${sessionStatus}), exiting wait state`);
-        resetWaitState();
-        return;
-      }
-
-      log('WAIT', `Sending prompt (cycle ${waitState.idleCycles + 1}, interval=${waitState.currentInterval}min)`);
-      await sendPrompt(activeSessionID);
-
-      if (checkFilesChanged()) {
-        log('WAIT', 'File change detected after prompt, resetting');
-        resetWaitState();
-        return;
-      }
-
-      waitState.idleCycles++;
-      log('WAIT', `Idle cycles=${waitState.idleCycles}/${config.max_idle_cycles}`);
-
-      if (waitState.idleCycles >= config.max_idle_cycles) {
-        waitState.currentInterval *= 2;
-        log('WAIT', `Doubling interval to ${waitState.currentInterval}min`);
-        waitState.idleCycles = 0;
-      }
-
-      scheduleWaitCheck();
-    }, ms);
-    log('WAIT', `Next check in ${waitState.currentInterval}min`);
-  }
-
-  function enterWaitState() {
-    if (waitState.active) return;
-    waitState.active = true;
-    waitState.idleCycles = 0;
-    waitState.currentInterval = config.check_interval_minutes;
-    log('WAIT', `Entering wait state (interval=${waitState.currentInterval}min)`);
-    scheduleWaitCheck();
-  }
-
   async function sendPrompt(sessionID) {
-    const promptContent = getPromptContent();
+    const promptContent = fileWatch.readPrompt();
     if (!promptContent.trim()) {
       log('SKIP', 'Prompt content is empty, skipping');
       return;
@@ -196,6 +86,7 @@ const server = async (input) => {
     }
 
     log('PROMPT', `session=${sid} sending prompt (len=${promptContent.length})`);
+    detector.setPromptInFlight(true);
     try {
       await client.session.prompt({
         path: { id: sid },
@@ -206,8 +97,19 @@ const server = async (input) => {
       log('PROMPT_DONE', `session=${sid} reply complete`);
     } catch (err) {
       log('PROMPT_ERR', `session=${sid} ${err.message}`);
+    } finally {
+      detector.setPromptInFlight(false);
     }
   }
+
+  const waitState = new WaitState({
+    initialIntervalMinutes: config.check_interval_minutes,
+    maxIdleCycles: config.max_idle_cycles,
+    fileWatch,
+    sendPrompt,
+    isSessionIdle: () => sessionStatus === 'idle',
+    log,
+  });
 
   const detector = new OpenCodeTrueIdleDetector({
     log,
@@ -216,26 +118,26 @@ const server = async (input) => {
         log('SKIP', 'Plugin disabled');
         return;
       }
-      if (waitState.active) return;
-
       activeSessionID = sessionID;
-      log('ON_IDLE', `session=${sessionID} triggered, sending prompt`);
-      await sendPrompt(sessionID);
-
-      const changed = checkFilesChanged();
-      if (changed) {
-        log('FILES', 'File(s) changed, resetting idle cycle');
-        resetWaitState();
-      } else {
-        log('FILES', 'No file changes, entering wait state');
-        enterWaitState();
-      }
+      log('ON_IDLE', `session=${sessionID} triggered`);
+      waitState.onIdle(sessionID);
+    },
+    onIdleExit: (sessionID) => {
+      if (!config.enabled) return;
+      log('ON_IDLE_EXIT', `session=${sessionID} idle exit`);
+      waitState.onIdleExit();
+    },
+    onUserInterrupt: (sessionID) => {
+      waitState.onUserInterrupt(sessionID);
+    },
+    onUserInput: (sessionID) => {
+      waitState.onUserInput(sessionID);
     },
   });
 
   log('INIT', `Plugin idle-continue initialized | directory=${directory}`);
   log('DESIGN', JSON.stringify({
-    signals: ['session.status', 'session.idle', 'permission.asked', 'permission.replied', 'question.asked', 'question.replied2', 'question.rejected2'],
+    signals: ['session.status', 'session.idle', 'permission.asked', 'permission.replied', 'question.asked', 'question.replied2', 'question.rejected2', 'chat.message'],
     rule: 'TRUE_IDLE -> send prompt -> check watch_files -> wait state if unchanged -> periodic resend with backoff',
     config: {
       prompt_file: config.prompt_file,
@@ -268,18 +170,20 @@ const server = async (input) => {
 
       if (role === 'user') {
         log('USER_INPUT', `session=${sessionID} msg=${messageID} model=${modelStr} len=${textContent.length} text=${JSON.stringify(entry)}`);
-        if (checkFilesChanged() && waitState.active) {
-          log('WAIT', 'User input with file change, exiting wait state');
-          resetWaitState();
+        if (fileWatch.hasFilesChanged()) {
+          log('WAIT', 'User input with file change');
+          fileWatch.syncToLatest();
         }
       } else if (role === 'assistant') {
         log('AI_REPLY', `session=${sessionID} msg=${messageID} model=${modelStr} len=${textContent.length} text=${JSON.stringify(entry)}`);
       }
+
+      detector.handleChatMessage(input, output);
     },
 
     dispose: async () => {
       log('DISPOSE', 'Plugin shutting down');
-      resetWaitState();
+      waitState.dispose();
       detector.dispose();
     },
   };

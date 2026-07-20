@@ -6,14 +6,25 @@ export class OpenCodeTrueIdleDetector {
   #activeSessionID = null;
   #pendingCheck = null;
   #onIdle;
+  #onIdleExit;
+  #onUserInterrupt;
+  #onUserInput;
+  #promptInFlight = false;
 
-  constructor({ log, onIdle }) {
+  constructor({ log, onIdle, onIdleExit, onUserInterrupt, onUserInput }) {
     this.#log = log;
     this.#onIdle = onIdle;
+    this.#onIdleExit = onIdleExit;
+    this.#onUserInterrupt = onUserInterrupt;
+    this.#onUserInput = onUserInput;
   }
 
   get activeSessionID() {
     return this.#activeSessionID;
+  }
+
+  setPromptInFlight(v) {
+    this.#promptInFlight = v;
   }
 
   #scheduleCheck(sessionID, delay = 200) {
@@ -41,6 +52,12 @@ export class OpenCodeTrueIdleDetector {
         const oldStatus = this.#status;
         this.#status = s.type;
         this.#log('STATUS', `session=${sid} ${oldStatus} -> ${s.type}`);
+
+        if (oldStatus === 'idle' && s.type === 'busy') {
+          this.#log('ON_IDLE_EXIT', `session=${sid} idle->busy`);
+          this.#onIdleExit?.(sid);
+        }
+
         if (s.type === 'idle' && !this.#waitingPermission && !this.#waitingQuestion) {
           this.#log('CANDIDATE', `session=${sid} idle, scheduling check`);
           this.#scheduleCheck(sid, 200);
@@ -80,6 +97,20 @@ export class OpenCodeTrueIdleDetector {
         if (this.#status === 'idle') this.#scheduleCheck(sid, 200);
         break;
       }
+    }
+  }
+
+  handleChatMessage(input, output) {
+    const { sessionID, messageID } = input;
+    const { message } = output;
+    const role = message?.role || 'unknown';
+
+    if (role === 'assistant' && message?.error?.name === 'MessageAbortedError') {
+      this.#log('USER_INTERRUPT', `session=${sessionID} msg=${messageID} AI response aborted by user`);
+      this.#onUserInterrupt?.(sessionID);
+    } else if (role === 'user' && !this.#promptInFlight) {
+      this.#log('USER_INPUT', `session=${sessionID} msg=${messageID} manual user input`);
+      this.#onUserInput?.(sessionID);
     }
   }
 
