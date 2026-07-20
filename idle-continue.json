@@ -1,0 +1,7 @@
+{
+  "prompt_file": "idle-prompt.md",
+  "watch_files": ["task.md", "wish-list.md"],
+  "check_interval_minutes": 30,
+  "max_idle_cycles": 5,
+  "enabled": true
+}
