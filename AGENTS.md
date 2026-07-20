@@ -50,6 +50,83 @@
 - `wish-list.md` — 默认检测文件之一，记录待办愿望清单
 - `idle-continue.json` — 配置文件
 
+## 项目结构
+
+```
+opencode-idle-continue/
+│
+├── src/
+│   ├── index.js                          ← 插件唯一入口。导出 { id, server }
+│   └── opencode-true-idle-detector.js    ← OpenCodeTrueIdleDetector 类（空闲检测）
+│
+├── dist/
+│   ├── index.js                          ← bun build 打包产物（含 idle detector）
+│   └── package.json                      ← npm 包分发清单
+│
+├── install-local.sh                      ← 构建 + 本地安装脚本
+├── clean.sh                              ← 卸载脚本
+│
+├── package.json                          ← npm 包配置（build → dist/）
+├── AGENTS.md                             ← 本文档
+├── README.md
+├── LICENSE
+└── .gitignore
+```
+
+## 构建与打包
+
+源码是纯 JavaScript ESM，无需 transpile。构建时将 `src/` 复制到 `dist/`：
+
+```bash
+npm run build
+```
+
+构建命令：
+```
+mkdir -p dist && cp src/*.js dist/
+```
+
+输出：
+- `dist/index.js` — 插件入口（与 `src/index.js` 一致）
+- `dist/opencode-true-idle-detector.js` — 空闲检测模块
+- `dist/package.json` — npm 包分发清单
+
+不依赖 bun，node 和 bun 均可使用。
+
+## 安装
+
+### 方式一：本地安装（开发调试）
+
+```bash
+bash install-local.sh
+```
+
+该脚本依次执行：
+1. `bun run build` — 构建 `dist/`
+2. `npm pack` — 从 `dist/` 创建 tarball `dist/opencode-idle-continue-1.0.0.tgz`
+3. 复制 `dist/` 内容到 `.opencode/plugins/idle-continue/`
+4. 在 `.opencode/` 下安装 `@opencode-ai/plugin` 依赖
+5. 更新 `opencode.json` 添加插件引用 `./plugins/idle-continue/index.js`
+
+完成后**重启 opencode** 加载插件。
+
+检查日志：`tail -f .log/log-*.log`
+
+### 方式二：npm 发布（生产）
+
+```bash
+npm publish
+```
+
+`package.json#files` 仅包含 `dist/`、`README.md`、`LICENSE`。
+OpenCode 通过插件缓存机制从 npm 拉取安装。
+
+## 卸载
+
+```bash
+bash clean.sh
+```
+
 ## 行为细节
 
 1. 插件启动后立即开始监控空闲状态
@@ -61,3 +138,92 @@
 7. 等待状态下每 `check_interval_minutes` 分钟检测一次，若仍空闲则发送提示词
 8. 连续 `max_idle_cycles` 次检测到空闲 → `check_interval_minutes` 翻倍
 9. 任意时刻检测到文件变化 → 间隔重置为初始值，退出等待状态
+
+## 实现规范
+
+### 插件入口 (`src/index.js`)
+
+- **导出格式**: ESM 默认导出 `{ id: string, server: Plugin }`
+- `server(input)` 接收 `PluginInput`，含 `{ directory, client, ... }`
+- 返回 `{ event, "chat.message", dispose }` 三个 hook
+- `input.client` 用于调用 `session.prompt()` 发送指令
+
+### OpenCodeTrueIdleDetector 类规范 (`src/opencode-true-idle-detector.js`)
+
+- 使用 JavaScript 私有字段（`#`）封装状态，防止外部篡改
+- `scheduleCheck` 用 `setTimeout` 实现 200ms 去抖
+- `onIdle` 回调在去抖确认后调用，但回调本身可以是 `async`
+- `handleEvent` 是**同步方法**，仅操作状态机和定时器，不处理回调结果
+- `dispose` 清理 pending 定时器
+
+### Logger
+
+- 日志路径: `path.join(directory, '.log')` → 项目根目录 `.log/`
+- 使用 `directory` input 参数，禁止使用 `__dirname`
+- 格式: `[<ISO8601>] [<LEVEL>] <msg>`
+
+### 日志级别
+
+| Level | 触发时机 |
+|---|---|
+| `INIT` | 插件初始化 |
+| `DESIGN` | 启动时输出设计决策 |
+| `STATUS` | session.status 变更 |
+| `IDLE` | session.idle 事件 |
+| `CANDIDATE` | 进入 idle 但尚未去抖确认 |
+| `TRUE_IDLE` | **去抖后确认真正空闲** |
+| `SKIP` | 去抖后条件不满足，或插件未启用 |
+| `DEBOUNCE` | 去抖被 busy 取消 |
+| `PERM` | permission.asked/replied |
+| `QUEST` | question.asked/replied/rejected |
+| `PROMPT` | 发送提示词 |
+| `PROMPT_DONE` | 提示词回复完成 |
+| `PROMPT_ERR` | 提示词发送失败 |
+| `HOT_RELOAD` | prompt_file 热重载 |
+| `FILES` | 检测文件变更状态 |
+| `WAIT` | 等待状态进入/循环/退出 |
+| `RESET` | 等待状态重置 |
+| `ON_IDLE` | onIdle 回调触发 |
+| `USER_INPUT` | 用户消息 |
+| `AI_REPLY` | AI 回复 |
+| `DISPOSE` | 插件关闭 |
+
+### 发送机制
+
+- 使用 `client.session.prompt()`（阻塞式）：发送后等待完整 AI 回复（含工具调用）才继续
+- 天然保证"回复处理完成"后才进行下一步
+
+### 去抖机制
+
+- `scheduleCheck(sessionID, delay=200)` 用 `setTimeout` 实现
+- 已有 pending 则 `clearTimeout` 重置
+- 到期后验证 `status === 'idle' && !waitingPermission && !waitingQuestion`
+- 若中途变为 busy，立即取消
+
+### 等待状态与退避
+
+```
+TRUE_IDLE → onIdle(sessionID)
+  → sendPrompt(promptContent)
+  → prompt() 返回
+  → checkFilesChanged()
+    → 有变化 → resetWaitState() (idleCycles=0, interval=初始)
+    → 无变化 → enterWaitState()
+      → scheduleWaitCheck(interval)
+        → 定时器触发:
+          → 文件变化? → resetWaitState()
+          → 非 idle? → resetWaitState()
+          → 仍 idle → sendPrompt() → 检查文件
+            → 无变化 → idleCycles++
+              → idleCycles >= max_idle_cycles? → interval *= 2, idleCycles=0
+            → scheduleWaitCheck(interval)
+```
+
+### 关键约束
+
+1. **不允许使用外部 logger 模块** — createLogger 内联
+2. **日志路径必须用 `directory` input** — 禁止 `__dirname`
+3. **所有源文件使用 ESM** — `"type": "module"`
+4. **`chat.message` 文本截断 2000 字符**
+5. **`client.session.prompt()` 阻塞等待完整回复** — 连续处理的基础
+6. **`dist/package.json` 不包含 devDependencies** — 分发包保持最小依赖

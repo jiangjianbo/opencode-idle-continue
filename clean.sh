@@ -19,9 +19,14 @@ read -p "Reset .opencode/opencode.json plugin entries? (y/N) " yn
 if [ "$yn" = "y" ]; then
   cat > .opencode/opencode.json << 'ENDJSON'
 {
-  "plugin": [],
   "$schema": "https://opencode.ai/config.json"
 }
 ENDJSON
   echo "[clean] Reset .opencode/opencode.json"
+fi
+
+read -p "Remove dist/ directory? (y/N) " yn2
+if [ "$yn2" = "y" ]; then
+  rm -rf dist
+  echo "[clean] Deleted dist/"
 fi

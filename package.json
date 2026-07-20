@@ -2,14 +2,20 @@
   "name": "opencode-idle-continue",
   "version": "1.0.0",
   "type": "module",
-  "main": "src/index.js",
+  "main": "dist/index.js",
   "exports": {
     ".": {
-      "default": "./src/index.js"
+      "default": "./dist/index.js"
     }
   },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
-    "postinstall": "node scripts/postinstall.js"
+    "build": "mkdir -p dist && cp src/*.js dist/",
+    "prepublishOnly": "npm run build"
   },
   "keywords": ["opencode", "opencode-plugin"],
   "dependencies": {
