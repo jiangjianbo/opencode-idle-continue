@@ -1,15 +1,22 @@
 export class OpenCodeTrueIdleDetector {
   #log;
+  #BASE_DELAY = 200;
+  #currentDelay = this.#BASE_DELAY;
   #status = 'idle';
   #waitingPermission = false;
   #waitingQuestion = false;
   #activeSessionID = null;
+  #idleSince = null;
   #pendingCheck = null;
   #onIdle;
   #onIdleExit;
   #onUserInterrupt;
   #onUserInput;
-  #promptInFlight = false;
+  #interrupted = false;
+  #skipNextUserMessage = false;
+  #skipNextUserMessageTimer = null;
+  #skipNextIdleExit = false;
+  #skipNextIdleExitTimer = null;
 
   constructor({ log, onIdle, onIdleExit, onUserInterrupt, onUserInput }) {
     this.#log = log;
@@ -23,27 +30,118 @@ export class OpenCodeTrueIdleDetector {
     return this.#activeSessionID;
   }
 
-  setPromptInFlight(v) {
-    this.#promptInFlight = v;
+  get interrupted() {
+    return this.#interrupted;
   }
 
-  #scheduleCheck(sessionID, delay = 200) {
+  setSkipNextUserMessage(delayMs = 0) {
+    if (this.#skipNextUserMessageTimer) {
+      clearTimeout(this.#skipNextUserMessageTimer);
+      this.#skipNextUserMessageTimer = null;
+    }
+    this.#skipNextUserMessage = true;
+    
+    if (delayMs > 0) {
+      this.#skipNextUserMessageTimer = setTimeout(() => {
+        this.#skipNextUserMessage = false;
+        this.#skipNextUserMessageTimer = null;
+      }, delayMs);
+    }
+  }
+
+  setSkipNextIdleExit(delayMs = 0) {
+    if (this.#skipNextIdleExitTimer) {
+      clearTimeout(this.#skipNextIdleExitTimer);
+      this.#skipNextIdleExitTimer = null;
+    }
+    this.#skipNextIdleExit = true;
+    
+    if (delayMs > 0) {
+      this.#skipNextIdleExitTimer = setTimeout(() => {
+        this.#skipNextIdleExit = false;
+        this.#skipNextIdleExitTimer = null;
+      }, delayMs);
+    }
+  }
+
+  clearSkipNextUserMessage() {
+    if (this.#skipNextUserMessageTimer) {
+      clearTimeout(this.#skipNextUserMessageTimer);
+      this.#skipNextUserMessageTimer = null;
+    }
+    this.#skipNextUserMessage = false;
+  }
+
+  #scheduleCheck(sessionID, delay) {
+    const d = delay ?? this.#currentDelay;
     if (this.#pendingCheck) clearTimeout(this.#pendingCheck);
     this.#pendingCheck = setTimeout(() => {
       this.#pendingCheck = null;
+
+      if (this.#interrupted) {
+        this.#log('SKIP', `session=${sessionID} interrupted flag set, skipping idle`);
+        return;
+      }
+
       const trueIdle = this.#status === 'idle' && !this.#waitingPermission && !this.#waitingQuestion;
       if (trueIdle) {
-        this.#log('TRUE_IDLE', `session=${sessionID} status=idle perm=off quest=off`);
+        this.#log('TRUE_IDLE', `session=${sessionID} status=idle perm=off quest=off delay=${d}`);
+        this.#currentDelay *= 2;
         this.#onIdle(sessionID);
       } else {
         this.#log('SKIP', `session=${sessionID} not true idle: status=${this.#status} perm=${this.#waitingPermission} quest=${this.#waitingQuestion}`);
       }
-    }, delay);
+    }, d);
+  }
+
+  handleCancel(sessionID) {
+    if (this.#pendingCheck) {
+      clearTimeout(this.#pendingCheck);
+      this.#pendingCheck = null;
+    }
+    this.#interrupted = true;
+    this.#log('INTERRUPT', `session=${sessionID} session cancelled by user (ESC)`);
+    this.#onUserInterrupt?.(sessionID);
+  }
+
+  handleUserInput(sessionID) {
+    if (this.#pendingCheck) {
+      clearTimeout(this.#pendingCheck);
+      this.#pendingCheck = null;
+    }
+    if (this.#status === 'idle') {
+      this.#log('IDLE_END', `session=${sessionID} handleUserInput while idle`);
+      this.#onIdleExit?.(sessionID);
+    }
+    this.#interrupted = false;
+    this.#waitingPermission = false;
+    this.#waitingQuestion = false;
+    this.#status = 'busy';
+    this.#currentDelay = this.#BASE_DELAY;
+    this.#log('RESET', `session=${sessionID} state reset on user input`);
+  }
+
+  handleChatMessage(input, output) {
+    const { sessionID, messageID } = input;
+    const { message } = output;
+    const role = message?.role || 'unknown';
+
+    if (role === 'assistant' && message?.error?.name === 'MessageAbortedError') {
+      this.#interrupted = true;
+      this.#log('INTERRUPT', `session=${sessionID} msg=${messageID} AI response aborted by user`);
+      this.#onUserInterrupt?.(sessionID);
+    } else if (role === 'user' && !this.#skipNextUserMessage) {
+      this.#log('USER_INPUT', `session=${sessionID} msg=${messageID} manual user input`);
+      this.handleUserInput(sessionID);
+      this.#onUserInput?.(sessionID);
+    }
+    this.#skipNextUserMessage = false;
   }
 
   handleEvent({ event }) {
-    const { type, properties = {} } = event;
-    const sid = properties.sessionID || properties.info?.id || '-';
+    if (!event) return;
+    const { type, properties = {}, data = {} } = event;
+    const sid = properties.sessionID || data.sessionID || properties.info?.id || '-';
 
     switch (type) {
       case 'session.status': {
@@ -53,15 +151,19 @@ export class OpenCodeTrueIdleDetector {
         this.#status = s.type;
         this.#log('STATUS', `session=${sid} ${oldStatus} -> ${s.type}`);
 
-        if (oldStatus === 'idle' && s.type === 'busy') {
-          this.#log('ON_IDLE_EXIT', `session=${sid} idle->busy`);
-          this.#onIdleExit?.(sid);
-        }
-
         if (s.type === 'idle' && !this.#waitingPermission && !this.#waitingQuestion) {
           this.#log('CANDIDATE', `session=${sid} idle, scheduling check`);
-          this.#scheduleCheck(sid, 200);
+          this.#scheduleCheck(sid);
         }
+
+        if (oldStatus === 'idle' && s.type === 'busy') {
+          this.#currentDelay = this.#BASE_DELAY;
+          if (!this.#skipNextIdleExit) {
+            this.#log('IDLE_END', `session=${sid} idle -> busy`);
+            this.#onIdleExit?.(sid);
+          }
+        }
+
         if (s.type === 'busy' && this.#pendingCheck) {
           clearTimeout(this.#pendingCheck);
           this.#pendingCheck = null;
@@ -71,6 +173,7 @@ export class OpenCodeTrueIdleDetector {
       }
       case 'session.idle': {
         this.#activeSessionID = sid;
+        this.#idleSince = Date.now();
         this.#log('IDLE', `session=${sid}`);
         break;
       }
@@ -97,20 +200,15 @@ export class OpenCodeTrueIdleDetector {
         if (this.#status === 'idle') this.#scheduleCheck(sid, 200);
         break;
       }
-    }
-  }
-
-  handleChatMessage(input, output) {
-    const { sessionID, messageID } = input;
-    const { message } = output;
-    const role = message?.role || 'unknown';
-
-    if (role === 'assistant' && message?.error?.name === 'MessageAbortedError') {
-      this.#log('USER_INTERRUPT', `session=${sessionID} msg=${messageID} AI response aborted by user`);
-      this.#onUserInterrupt?.(sessionID);
-    } else if (role === 'user' && !this.#promptInFlight) {
-      this.#log('USER_INPUT', `session=${sessionID} msg=${messageID} manual user input`);
-      this.#onUserInput?.(sessionID);
+      case 'session.error': {
+        const err = properties.error || data.error;
+        if (err?.name === 'MessageAbortedError') {
+          this.#interrupted = true;
+          this.#log('INTERRUPT', `session=${sid} session.error with MessageAbortedError`);
+          this.#onUserInterrupt?.(sid);
+        }
+        break;
+      }
     }
   }
 
@@ -118,6 +216,14 @@ export class OpenCodeTrueIdleDetector {
     if (this.#pendingCheck) {
       clearTimeout(this.#pendingCheck);
       this.#pendingCheck = null;
+    }
+    if (this.#skipNextUserMessageTimer) {
+      clearTimeout(this.#skipNextUserMessageTimer);
+      this.#skipNextUserMessageTimer = null;
+    }
+    if (this.#skipNextIdleExitTimer) {
+      clearTimeout(this.#skipNextIdleExitTimer);
+      this.#skipNextIdleExitTimer = null;
     }
   }
 }

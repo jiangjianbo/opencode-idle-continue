@@ -86,7 +86,9 @@ const server = async (input) => {
     }
 
     log('PROMPT', `session=${sid} sending prompt (len=${promptContent.length})`);
-    detector.setPromptInFlight(true);
+    detector.setSkipNextUserMessage(1000);  // 1s 后自动清除，防止提示词被误识别
+    detector.setSkipNextIdleExit(2000);     // 2s 后自动清除，防止发送期间触发 idle exit
+    
     try {
       await client.session.prompt({
         path: { id: sid },
@@ -97,8 +99,6 @@ const server = async (input) => {
       log('PROMPT_DONE', `session=${sid} reply complete`);
     } catch (err) {
       log('PROMPT_ERR', `session=${sid} ${err.message}`);
-    } finally {
-      detector.setPromptInFlight(false);
     }
   }
 
@@ -164,7 +164,7 @@ const server = async (input) => {
       const { sessionID, messageID, model } = input;
       const { message, parts } = output;
       const role = message?.role || 'unknown';
-      const textContent = parts?.map(p => p.text).filter(Boolean).join('\n');
+      const textContent = (parts ?? []).map(p => p.text).filter(Boolean).join('\n');
       const modelStr = model ? `${model.providerID}/${model.modelID}` : '';
       const entry = textContent.slice(0, 2000);
 

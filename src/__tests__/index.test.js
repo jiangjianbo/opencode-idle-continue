@@ -113,9 +113,10 @@ describe('Integration: server()', () => {
       expect(env.mockPrompt).toHaveBeenCalledTimes(1);
 
       // State reset → second idle triggers onIdle again
+      // Detector's currentDelay=400 (doubled after first TRUE_IDLE), advance enough
       env.mockPrompt.mockClear();
       env.hooks.event(idleEvent('s2'));
-      await vi.advanceTimersByTimeAsync(200);
+      await vi.advanceTimersByTimeAsync(400);
       expect(env.mockPrompt).toHaveBeenCalledTimes(1);
     } finally {
       await env.cleanup();
@@ -139,8 +140,9 @@ describe('Integration: server()', () => {
       expect(env.mockPrompt).not.toHaveBeenCalled();
 
       // State reset → new idle triggers again
+      // Detector's currentDelay=400 (doubled after first TRUE_IDLE), advance enough
       env.hooks.event(idleEvent('s2'));
-      await vi.advanceTimersByTimeAsync(200);
+      await vi.advanceTimersByTimeAsync(400);
       expect(env.mockPrompt).toHaveBeenCalledTimes(1);
     } finally {
       await env.cleanup();

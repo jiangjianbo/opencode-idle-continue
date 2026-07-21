@@ -14,7 +14,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "mkdir -p dist && cp src/*.js dist/",
+    "build": "node tools/build.mjs",
     "prepublishOnly": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest"

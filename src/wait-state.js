@@ -76,7 +76,7 @@ export class WaitState {
     this.#currentInterval = this.#initialInterval;
 
     this.#log('WAIT', 'WAIT Entering wait state, sending initial prompt');
-    this.#sendAndCheck(sessionID);
+    this.#sendAndCheck(sessionID, true);  // true 表示初始发送
   }
 
   onIdleExit() {
@@ -98,11 +98,15 @@ export class WaitState {
     this.#interrupted = false;
   }
 
+  get active() {
+    return this.#active;
+  }
+
   reset() {
     this.#reset();
   }
 
-  #sendAndCheck(sessionID) {
+  #sendAndCheck(sessionID, initial = false) {
     (async () => {
       await this.#sendPrompt(sessionID);
 
@@ -115,13 +119,16 @@ export class WaitState {
         return;
       }
 
-      this.#idleCycles++;
-      this.#log('WAIT', `WAIT Idle cycles=${this.#idleCycles}/${this.#maxIdleCycles}`);
+      // 如果不是初始发送，才记录循环次数
+      if (!initial) {
+        this.#idleCycles++;
+        this.#log('WAIT', `WAIT Idle cycles=${this.#idleCycles}/${this.#maxIdleCycles}`);
 
-      if (this.#idleCycles >= this.#maxIdleCycles) {
-        this.#currentInterval *= 2;
-        this.#log('WAIT', `WAIT Doubling interval to ${this.#currentInterval}min`);
-        this.#idleCycles = 0;
+        if (this.#idleCycles >= this.#maxIdleCycles) {
+          this.#currentInterval *= 2;
+          this.#log('WAIT', `WAIT Doubling interval to ${this.#currentInterval}min`);
+          this.#idleCycles = 0;
+        }
       }
 
       this.#schedule();

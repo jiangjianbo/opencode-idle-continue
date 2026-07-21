@@ -35,7 +35,7 @@ cp "$PROJECT_ROOT/package.json" "$PLUGIN_DIR/root-package.json"
 if [ ! -d "$OPENCODE_DIR/node_modules/@opencode-ai/plugin" ]; then
   echo "[install] Installing @opencode-ai/plugin in .opencode/ ..."
   cd "$OPENCODE_DIR"
-  npm init -y 2>/dev/null
+  echo '{"name":"opencode-config","version":"1.0.0"}' > package.json
   npm install @opencode-ai/plugin 2>/dev/null
   cd "$PROJECT_ROOT"
 fi
@@ -46,14 +46,30 @@ if [ ! -f "$CONFIG_PATH" ]; then
 fi
 
 PLUGIN_REF="./plugins/idle-continue/index.js"
-node -e "
+# Create a temporary Node.js script to avoid shell escaping issues
+cat > /tmp/update_opencode_config.js << 'EOF'
 const fs = require('fs');
-let cfg = JSON.parse(fs.readFileSync('$CONFIG_PATH', 'utf-8'));
+const path = require('path');
+
+const configDir = process.argv[2];
+const configPath = path.join(configDir, 'opencode.json');
+const pluginRef = process.argv[3];
+
+let cfg = {};
+if (fs.existsSync(configPath)) {
+  cfg = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+}
+
 cfg.plugin = cfg.plugin || [];
-if (!cfg.plugin.includes('$PLUGIN_REF')) cfg.plugin.push('$PLUGIN_REF');
-cfg['\$schema'] = 'https://opencode.ai/config.json';
-fs.writeFileSync('$CONFIG_PATH', JSON.stringify(cfg, null, 2) + '\n');
-"
+if (!cfg.plugin.includes(pluginRef)) {
+  cfg.plugin.push(pluginRef);
+}
+cfg['$schema'] = 'https://opencode.ai/config.json';
+fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n');
+console.log('Config updated:', configPath);
+EOF
+
+node /tmp/update_opencode_config.js "$OPENCODE_DIR" "$PLUGIN_REF"
 
 echo ""
 echo "[install] === Install complete ==="
