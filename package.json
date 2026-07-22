@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "opencode-idle-continue": "./dist/cli/index.js"
+  },
   "exports": {
     ".": {
       "default": "./dist/index.js"
@@ -17,7 +20,8 @@
     "build": "node tools/build.mjs",
     "prepublishOnly": "npm run build",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "postinstall": "opencode-idle-continue install system"
   },
   "keywords": ["opencode", "opencode-plugin"],
   "dependencies": {

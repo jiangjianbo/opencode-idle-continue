@@ -5,6 +5,7 @@ const srcDir = 'src';
 const distDir = 'dist';
 
 fs.mkdirSync(distDir, { recursive: true });
+fs.mkdirSync(path.join(distDir, 'cli'), { recursive: true });
 
 const files = fs.readdirSync(srcDir)
   .filter(f => f.endsWith('.js'));
@@ -13,12 +14,22 @@ for (const f of files) {
   fs.copyFileSync(path.join(srcDir, f), path.join(distDir, f));
 }
 
+const cliFiles = fs.readdirSync(path.join(srcDir, 'cli'))
+  .filter(f => f.endsWith('.js'));
+
+for (const f of cliFiles) {
+  fs.copyFileSync(path.join(srcDir, 'cli', f), path.join(distDir, 'cli', f));
+}
+
 const rootPkg = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
 const distPkg = {
   name: rootPkg.name,
   version: rootPkg.version,
   type: rootPkg.type,
   main: 'index.js',
+  bin: {
+    'opencode-idle-continue': './cli/index.js'
+  },
   exports: {
     ".": {
       "default": "./index.js"
