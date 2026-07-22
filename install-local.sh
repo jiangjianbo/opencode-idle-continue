@@ -1,35 +1,81 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
-OPENCODE_DIR="$PROJECT_ROOT/.opencode"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# ============================================================
+# Project root detection
+# Walks upward from CWD to find the first directory containing
+# any AI agent config directory or file. Stops before root.
+# ============================================================
+AI_AGENT_DIRS=(
+  ".opencode" ".claude" ".cursor" ".windsurf" ".continue" ".github" ".copilot"
+)
+AI_AGENT_FILES=(
+  "agents.md" "AGENTS.md" "claude.md" "CLAUDE.md" ".cursorrules" ".windsurfrules"
+  "continue.json" "continue.md" "COPILOT_INSTRUCTIONS.md"
+)
+
+find_project_root() {
+  local dir
+  dir="$(cd "$1" 2>/dev/null && pwd)" || return 1
+
+  while [ "$dir" != "/" ]; do
+    for marker in "${AI_AGENT_DIRS[@]}"; do
+      if [ -d "$dir/$marker" ]; then
+        echo "$dir"
+        return 0
+      fi
+    done
+    for marker in "${AI_AGENT_FILES[@]}"; do
+      if [ -f "$dir/$marker" ]; then
+        echo "$dir"
+        return 0
+      fi
+    done
+    dir="$(dirname "$dir")"
+  done
+
+  return 1
+}
+
+ROOT="$(find_project_root "$(pwd)")" || {
+  echo "[install] Warning: Could not find project root (no AI agent config detected)."
+  echo "[install] Falling back to current directory."
+  ROOT="$(pwd)"
+}
+
+OPENCODE_DIR="$ROOT/.opencode"
 PLUGIN_DIR="$OPENCODE_DIR/plugins/idle-continue"
 CONFIG_PATH="$OPENCODE_DIR/opencode.json"
 
+# Ensure .opencode/ directory exists
+mkdir -p "$OPENCODE_DIR"
+
 echo "[install] Building opencode-idle-continue ..."
 
-# Step 1: Build to dist/ (supports both npm and bun)
-cd "$PROJECT_ROOT"
+# Step 1: Build to dist/ (from script dir, where source code lives)
+cd "$SCRIPT_DIR"
 npm run build
 
 echo "[install] Build complete. Packing npm package ..."
 
 # Step 2: Create npm tarball from dist/
 PACKAGE_NAME="opencode-idle-continue-$(node -p "require('./package.json').version").tgz"
-cd "$PROJECT_ROOT/dist"
-npm pack --pack-destination "$PROJECT_ROOT/dist" 2>/dev/null
-cd "$PROJECT_ROOT"
+cd "$SCRIPT_DIR/dist"
+npm pack --pack-destination "$SCRIPT_DIR/dist" 2>/dev/null
+cd "$SCRIPT_DIR"
 
 echo "[install] Package created: dist/$PACKAGE_NAME"
 
-# Step 3: Install to .opencode/plugins/idle-continue/
+# Step 3: Install to project root .opencode/plugins/idle-continue/
 echo "[install] Installing plugin to $PLUGIN_DIR ..."
 mkdir -p "$PLUGIN_DIR"
-cp -R "$PROJECT_ROOT/dist/"* "$PLUGIN_DIR/"
+cp -R "$SCRIPT_DIR/dist/"* "$PLUGIN_DIR/"
 rm -f "$PLUGIN_DIR/package.tgz" 2>/dev/null
 
 # Copy root package.json for npm metadata so OpenCode can resolve @opencode-ai/plugin
-cp "$PROJECT_ROOT/package.json" "$PLUGIN_DIR/root-package.json"
+cp "$SCRIPT_DIR/package.json" "$PLUGIN_DIR/root-package.json"
 
 # Step 4: Ensure .opencode/ has its own node_modules with @opencode-ai/plugin
 if [ ! -d "$OPENCODE_DIR/node_modules/@opencode-ai/plugin" ]; then
@@ -37,7 +83,7 @@ if [ ! -d "$OPENCODE_DIR/node_modules/@opencode-ai/plugin" ]; then
   cd "$OPENCODE_DIR"
   echo '{"name":"opencode-config","version":"1.0.0"}' > package.json
   npm install @opencode-ai/plugin 2>/dev/null
-  cd "$PROJECT_ROOT"
+  cd "$SCRIPT_DIR"
 fi
 
 # Step 5: Update opencode.json
@@ -73,6 +119,7 @@ node /tmp/update_opencode_config.js "$OPENCODE_DIR" "$PLUGIN_REF"
 
 echo ""
 echo "[install] === Install complete ==="
+echo "[install] Project root: $ROOT"
 echo "[install] Plugin:  $PLUGIN_DIR"
 echo "[install] Config:  $CONFIG_PATH"
 echo "[install] Package: dist/$PACKAGE_NAME"

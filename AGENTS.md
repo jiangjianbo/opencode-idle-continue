@@ -133,13 +133,19 @@ bash install-local.sh
 ```
 
 该脚本依次执行：
-1. `bun run build` — 构建 `dist/`
-2. `npm pack` — 从 `dist/` 创建 tarball `dist/opencode-idle-continue-1.0.0.tgz`
-3. 复制 `dist/` 内容到 `.opencode/plugins/idle-continue/`
-4. 在 `.opencode/` 下安装 `@opencode-ai/plugin` 依赖
-5. 更新 `opencode.json` 添加插件引用 `./plugins/idle-continue/index.js`
+1. **项目根目录探查**：从当前目录开始向上遍历父目录，查找第一个存在以下任意标志的目录作为项目根目录：
+   - 智能体配置目录：`.opencode/`、`.claude/`、`.cursor/`、`.windsurf/`、`.continue/`、`.github/`、`.copilot/`
+   - 智能体配置文件：`agents.md`、`AGENTS.md`、`claude.md`、`CLAUDE.md`、`.cursorrules`、`.windsurfrules`、`continue.json`、`continue.md`、`COPILOT_INSTRUCTIONS.md`
+   - 向上遍历不超过文件系统根目录
+2. `npm run build` — 构建 `dist/`
+3. `npm pack` — 从 `dist/` 创建 tarball `dist/opencode-idle-continue-1.0.0.tgz`
+4. 复制 `dist/` 内容到根目录的 `.opencode/plugins/idle-continue/`
+5. 在 `.opencode/` 下安装 `@opencode-ai/plugin` 依赖
+6. 更新 `opencode.json` 添加插件引用 `./plugins/idle-continue/index.js`
 
 完成后**重启 opencode** 加载插件。
+
+> **项目根目录探查说明**：如果当前目录或其上级目录未发现任何 AI 智能体配置，将回退到当前目录作为项目根目录。
 
 检查日志：`tail -f .log/log-*.log`
 

@@ -130,12 +130,52 @@ async function installToSystem() {
   return 0;
 }
 
+const AI_AGENT_DIRS = [
+  '.opencode', '.claude', '.cursor', '.windsurf', '.continue', '.github', '.copilot',
+];
+const AI_AGENT_FILES = [
+  'agents.md', 'AGENTS.md', 'claude.md', 'CLAUDE.md', '.cursorrules', '.windsurfrules',
+  'continue.json', 'continue.md', 'COPILOT_INSTRUCTIONS.md',
+];
+
+function findProjectRoot(startDir) {
+  let dir = path.resolve(startDir);
+
+  while (dir !== path.dirname(dir)) {
+    for (const marker of AI_AGENT_DIRS) {
+      try {
+        if (fs.statSync(path.join(dir, marker)).isDirectory()) {
+          return dir;
+        }
+      } catch {}
+    }
+    for (const marker of AI_AGENT_FILES) {
+      try {
+        if (fs.statSync(path.join(dir, marker)).isFile()) {
+          return dir;
+        }
+      } catch {}
+    }
+    dir = path.dirname(dir);
+  }
+
+  return null;
+}
+
 async function installToLocal() {
   const cwd = process.cwd();
-  console.log(`🔧 Installing ${PLUGIN_NAME} v${PLUGIN_VERSION} to local project...\n`);
-  console.log(`📁 Project directory: ${cwd}\n`);
 
-  const opencodeDir = path.join(cwd, '.opencode');
+  const root = findProjectRoot(cwd);
+  if (root) {
+    console.log(`🔧 Installing ${PLUGIN_NAME} v${PLUGIN_VERSION} to local project...\n`);
+    console.log(`📁 Project root (detected): ${root}\n`);
+  } else {
+    console.log(`🔧 Installing ${PLUGIN_NAME} v${PLUGIN_VERSION} to local project...\n`);
+    console.log(`📁 Project directory: ${cwd}\n`);
+  }
+
+  const projectRoot = root || cwd;
+  const opencodeDir = path.join(projectRoot, '.opencode');
   ensureDir(opencodeDir);
 
   const localConfigPath = path.join(opencodeDir, 'opencode.json');
