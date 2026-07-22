@@ -1,2 +1,210 @@
+[中文版文档](README.zh.md) | English
+
 # opencode-idle-continue
-send prompt when opencode idle
+
+OpenCode plugin that automatically sends prompts to continue processing when idle.
+
+## Features
+
+- **Idle Detection**: Monitors OpenCode idle status and triggers continuation logic during idle periods
+- **Automatic Prompt Delivery**: Reads prompt content from specified markdown files and sends to OpenCode for continued processing
+- **Hot Reload**: Automatically reloads prompt files when modified without restarting the plugin
+- **File Change Monitoring**: Maintains a list of files to monitor for content/timestamp changes
+- **Wait State Management**: Enters wait state when sent prompts don't change monitored files, with interval backoff mechanism
+- **Two Working Modes**:
+  - **Traditional Mode**: Direct prompt delivery with file monitoring and interval backoff
+  - **Subagent Mode**: Triggers OpenCode's native Task tool to launch sub-agents with automatic session management
+
+## Installation
+
+### Method 1: Global Installation
+
+```bash
+npm install -g opencode-idle-continue
+```
+
+After global installation, install to your desired location:
+
+```bash
+# Install to system config
+opencode-idle-continue install system
+
+# Install to current project
+opencode-idle-continue install local
+
+# Install to specific directory
+opencode-idle-continue install /path/to/project
+```
+
+### Method 2: Local Development Installation
+
+```bash
+bash install-local.sh
+```
+
+This script:
+1. Builds the `dist/` directory
+2. Creates tarball `dist/opencode-idle-continue-1.0.0.tgz`
+3. Copies `dist/` contents to `.opencode/plugins/idle-continue/`
+4. Installs `@opencode-ai/plugin` dependency in `.opencode/`
+5. Updates `opencode.json` to add plugin reference `./plugins/idle-continue/index.js`
+
+After installation, restart OpenCode to load the plugin.
+
+## Configuration
+
+All parameters are configured via `idle-continue.json`. Configuration file lookup order:
+
+1. Project root directory
+2. `.opencode/` directory
+3. `~/.config/opencode/` directory
+
+### Configuration Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `prompt_file` | string | `"idle-prompt.md"` | Path to prompt file |
+| `watch_files` | string[] | `["task.md", "wish-list.md"]` | List of files to monitor |
+| `check_interval_minutes` | number | `30` | Check interval during wait state (minutes) |
+| `max_idle_cycles` | number | `5` | Max consecutive idle cycles before interval doubling |
+| `enabled` | boolean | `true` | Whether the plugin is enabled |
+| `subagent_enabled` | boolean | `false` | Whether to enable subagent mode |
+| `subagent_agent_type` | string | `"explore"` | Subagent type (only when subagent_enabled=true) |
+| `subagent_delay_ms` | number | `60_000` | Subagent trigger delay in milliseconds (only when subagent_enabled=true) |
+
+### Example `idle-continue.json`
+
+```json
+{
+  "prompt_file": "idle-prompt.md",
+  "watch_files": ["task.md", "wish-list.md"],
+  "check_interval_minutes": 30,
+  "max_idle_cycles": 5,
+  "enabled": true
+}
+```
+
+## Working Principles
+
+### Mode 1: Traditional Mode (Default)
+
+1. **Idle Detection**: Monitors system idle status. Triggers when OpenCode is idle.
+2. **Send Prompt**: Reads prompt content from specified markdown file and sends to OpenCode for continued processing.
+3. **Prompt Hot Reload**: Checks if prompt file has been modified each time `prompt_file` is used. Uses cached content if unchanged, reloads and updates cache if modified, no need to restart plugin.
+4. **File Change Monitoring**: Maintains a list of files to monitor for content/timestamp changes.
+5. **Wait State**: If no changes in monitored files after sending prompt, enters wait state. Wait state requires:
+   - Continuous system idle
+   - No changes in monitored files
+6. **Interval Backoff**: During wait state, sends prompt every interval (default 30 minutes). If 5 consecutive checks still idle (files unchanged), next wait interval doubles.
+
+### Mode 2: Subagent Mode
+
+1. **Idle Detection**: Same as traditional mode, monitors system idle status.
+2. **Delayed Execution**: Waits specified time (default 60 seconds) after detecting true idle.
+3. **Trigger Subagent**: Calls Task tool via main agent to launch subagent. Leverages OpenCode Host's native capabilities to automatically create sub-sessions, render clickable links, and save complete message history.
+4. **Subagent Management**: Host automatically handles sub-session lifecycle including creation, execution, completion, and history preservation.
+5. **User Interaction**: Users can click links to switch to sub-session view and view subagent's complete output.
+
+## Files
+
+- `idle-prompt.md` — Default prompt file, contains prompt content sent to OpenCode
+- `task.md` — Default monitored file, records current tasks
+- `wish-list.md` — Default monitored file, records pending wish list
+- `idle-continue.json` — Configuration file
+
+## CLI Commands
+
+```bash
+# Install to system config
+opencode-idle-continue install system
+
+# Install to current project
+opencode-idle-continue install local
+
+# Install to specific directory
+opencode-idle-continue install /path/to/project
+
+# Refresh plugin cache
+opencode-idle-continue update
+
+# Remove plugin
+opencode-idle-continue uninstall
+
+# Show help
+opencode-idle-continue --help
+
+# Show version
+opencode-idle-continue --version
+```
+
+## Build and Package
+
+Source code is pure JavaScript ESM, no transpile needed. Build copies `src/` to `dist/`:
+
+```bash
+npm run build
+```
+
+Build command:
+```
+mkdir -p dist && cp src/*.js dist/
+```
+
+Output:
+- `dist/index.js` — Plugin entry (same as `src/index.js`)
+- `dist/opencode-true-idle-detector.js` — Idle detection module
+- `dist/subagent-trigger.js` — Subagent trigger module
+- `dist/wait-state.js` — Wait state module
+- `dist/file-utils.js` — File utility module
+- `dist/cli/index.js` — CLI entry point
+- `dist/package.json` — npm package distribution manifest
+
+Works with both node and bun.
+
+## Project Structure
+
+```
+opencode-idle-continue/
+│
+├── src/
+│   ├── index.js                          ← Plugin only entry. Exports { id, server }
+│   ├── opencode-true-idle-detector.js    ← OpenCodeTrueIdleDetector class (idle detection debouncing state machine)
+│   ├── subagent-trigger.js               ← SubagentTrigger class (subagent trigger)
+│   ├── wait-state.js                     ← WaitState class (wait state and backoff)
+│   ├── file-utils.js                     ← File utilities (prompt loading, file snapshots, change detection)
+│   └── cli/
+│       └── index.js                      ← CLI entry point for installation commands
+│
+├── src/__tests__/
+│   ├── opencode-true-idle-detector.test.js  ← Idle detection state machine tests
+│   ├── prompt.test.js                       ← Prompt file reading/hot reload tests
+│   ├── file-watch.test.js                   ← File snapshot/change detection tests
+│   ├── wait-state.test.js                   ← Wait state and backoff tests
+│   └── index.test.js                        ← Integration tests
+│
+├── dist/
+│   ├── index.js                          ← Build output
+│   ├── opencode-true-idle-detector.js    ← Build output
+│   ├── subagent-trigger.js               ← Build output
+│   ├── wait-state.js                     ← Build output
+│   ├── file-utils.js                     ← Build output
+│   ├── cli/
+│   │   └── index.js                      ← CLI entry point
+│   └── package.json                      ← npm package distribution manifest
+│
+├── tools/
+│   └── build.mjs                         ← Build script
+│
+├── install-local.sh                      ← Build + local installation script
+├── clean.sh                              ← Uninstallation script
+│
+├── package.json                          ← npm package configuration
+├── README.md                             ← English documentation
+├── README.zh.md                          ← Chinese documentation
+├── LICENSE
+└── .gitignore
+```
+
+## License
+
+MIT
