@@ -4,6 +4,10 @@
 
 ## 工作原理
 
+本插件支持两种工作模式：
+
+### 模式 1：传统模式（默认）
+
 1. **空闲检测**：监控系统空闲状态。当 opencode 处于空闲状态时触发后续逻辑。
 2. **发送提示词**：从指定的 markdown 文件中读取提示内容并发送给 opencode 继续处理。
 3. **提示词热重载**：每次使用 `prompt_file` 时检查文件是否已修改。未修改则使用缓存内容，已修改则重新读入并更新缓存，无需重启插件。
@@ -12,6 +16,14 @@
    - 系统持续空闲
    - 检测文件列表中的文件没有改变
 6. **间隔退避**：在等待状态下，每隔一定时间间隔（默认 30 分钟）发送一次提示词。如果连续 5 次检测仍然处于空闲状态（文件未变化），则下一次的等待间隔翻倍。
+
+### 模式 2：子代理模式
+
+1. **空闲检测**：同传统模式，监控系统空闲状态。
+2. **延迟执行**：检测到真正空闲后等待指定时间（默认 60 秒）。
+3. **触发子代理**：通过主 agent 调用 Task 工具启动子代理。利用宿主（OpenCode Host）的原生能力自动创建子会话、渲染可点击链接、保存完整消息历史。
+4. **子代理管理**：宿主自动完成子会话的生命周期管理，包括创建、执行、完成和保存历史记录。
+5. **用户交互**：用户可点击链接切换到子会话视图，查看子代理的完整输出。
 
 ## 配置
 
@@ -30,6 +42,9 @@
 | `check_interval_minutes` | number | `30` | 等待状态下的检测间隔（分钟） |
 | `max_idle_cycles` | number | `5` | 连续空闲次数阈值，超限后间隔翻倍 |
 | `enabled` | boolean | `true` | 是否启用插件 |
+| `subagent_enabled` | boolean | `false` | 是否启用子代理模式 |
+| `subagent_agent_type` | string | `"explore"` | 子代理类型（仅 subagent_enabled=true 时生效） |
+| `subagent_delay_ms` | number | `60_000` | 子代理触发延迟（毫秒，仅 subagent_enabled=true 时生效） |
 
 ### 示例 `idle-continue.json`
 
@@ -58,7 +73,9 @@ opencode-idle-continue/
 ├── src/
 │   ├── index.js                          ← 插件唯一入口。导出 { id, server }
 │   ├── opencode-true-idle-detector.js    ← OpenCodeTrueIdleDetector 类（空闲检测去抖状态机）
-│   └── wait-state.js                     ← WaitState 类（等待状态与退避）
+│   ├── subagent-trigger.js               ← SubagentTrigger 类（子代理触发器）
+│   ├── wait-state.js                     ← WaitState 类（等待状态与退避）
+│   └── file-utils.js                     ← 文件工具（提示词加载、文件快照、变更检测）
 │
 ├── src/__tests__/
 │   ├── opencode-true-idle-detector.test.js  ← 空闲检测状态机测试
@@ -70,7 +87,9 @@ opencode-idle-continue/
 ├── dist/
 │   ├── index.js                          ← 构建产物
 │   ├── opencode-true-idle-detector.js    ← 构建产物
-│   └── wait-state.js                     ← 构建产物
+│   ├── subagent-trigger.js               ← 构建产物
+│   ├── wait-state.js                     ← 构建产物
+│   └── file-utils.js                     ← 构建产物
 │
 ├── install-local.sh                      ← 构建 + 本地安装脚本
 ├── clean.sh                              ← 卸载脚本
@@ -98,7 +117,9 @@ mkdir -p dist && cp src/*.js dist/
 输出：
 - `dist/index.js` — 插件入口（与 `src/index.js` 一致）
 - `dist/opencode-true-idle-detector.js` — 空闲检测模块
+- `dist/subagent-trigger.js` — 子代理触发模块
 - `dist/wait-state.js` — 等待状态模块
+- `dist/file-utils.js` — 文件工具模块
 - `dist/package.json` — npm 包分发清单
 
 不依赖 bun，node 和 bun 均可使用。
@@ -139,9 +160,13 @@ bash clean.sh
 
 ## 组件关系
 
-### OpenCodeTrueIdleDetector ↔ WaitState 协作
+### OpenCodeTrueIdleDetector ↔ WaitState/SubagentTrigger 协作
 
-`OpenCodeTrueIdleDetector` 是直接挂接 opencode 事件系统的入口层，负责从原始事件流中提取信号并通过回调通知 `WaitState`。`WaitState` 是复杂状态管理层，负责所有状态维持、定时调度和退避逻辑。
+`OpenCodeTrueIdleDetector` 是直接挂接 opencode 事件系统的入口层，负责从原始事件流中提取信号并通过回调通知 `WaitState` 或 `SubagentTrigger`。
+
+**传统模式（subagent_enabled=false）**：`WaitState` 是复杂状态管理层，负责所有状态维持、定时调度和退避逻辑。
+
+**子代理模式（subagent_enabled=true）**：`SubagentTrigger` 负责子代理的触发和管理，通过向主会话发送 prompt 来启动子代理。
 
 ```
 opencode 事件流
@@ -163,7 +188,55 @@ opencode 事件流
             ├── 检测到用户手动输入            → onUserInput(sessionID)    → WaitState.onUserInput()
 ```
 
-### 回调总览
+### SubagentTrigger 类
+
+`SubagentTrigger` 类封装了子代理触发逻辑，通过向主会话发送 prompt 来启动子代理。
+
+### 构造函数
+
+```javascript
+const trigger = new SubagentTrigger({ client, detector, log, directory });
+```
+
+### 核心方法
+
+- `async trigger(sessionID, opts)` - 触发主 agent 调用 Task 工具启动子代理
+  - `sessionID`: 主会话 ID
+  - `opts.agentType`: 子代理类型（如 'explore'）
+  - `opts.prompt`: 子代理的 prompt 文本
+  - `opts.description`: Task 描述（用于 TUI 显示）
+  - `opts.background`: 是否后台异步执行
+
+### 工作原理
+
+1. 通过 `client.session.prompt()` 向主会话发送结构化的指示文本
+2. 主 agent 解析指令后调用 `Task(subagent_type='explore', ...)`
+3. 宿主自动完成子会话创建、链接渲染、消息保存等生命周期管理
+4. `session.prompt()` 阻塞等待 agent 完成后返回
+5. 使用 `inFlight` 标志防止重复触发
+
+### 指示文本格式
+
+```
+[subagent-hello 自动触发]
+
+请立即调用 Task 工具，使用以下参数：
+- subagent_type: "explore"
+- description: "subagent-hello #1"
+- prompt: "Hello! 请简短地打个招呼并自我介绍一下。"
+
+直接调用 Task 工具，不要添加任何额外评论或解释。
+```
+
+### 与传统模式的区别
+
+| 维度 | 传统模式（WaitState） | 子代理模式（SubagentTrigger） |
+|------|---------------------|----------------------------|
+| 触发方式 | 直接发送提示词 | 通过 Task 工具启动子代理 |
+| 文件监控 | 监控 watch_files 变化 | 不依赖文件监控 |
+| 间隔退避 | 支持间隔退避机制 | 不支持，单次触发 |
+| 历史记录 | 存储在日志文件 | 由宿主保存到 `~/.local/share/opencode/storage/` |
+| 用户交互 | 无特殊交互 | 支持点击链接切换到子会话视图 |
 
 | 回调 | 触发方 | 接收方 | 说明 |
 |------|--------|--------|------|

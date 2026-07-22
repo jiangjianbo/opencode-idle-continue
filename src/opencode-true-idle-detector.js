@@ -14,8 +14,9 @@ export class OpenCodeTrueIdleDetector {
   #onUserInput;
   #interrupted = false;
   #skipNextUserMessage = false;
-  #skipNextUserMessageTimer = null;
   #skipNextIdleExit = false;
+  #promptInFlight = false;
+  #skipNextUserMessageTimer = null;
   #skipNextIdleExitTimer = null;
 
   constructor({ log, onIdle, onIdleExit, onUserInterrupt, onUserInput }) {
@@ -34,7 +35,7 @@ export class OpenCodeTrueIdleDetector {
     return this.#interrupted;
   }
 
-  setSkipNextUserMessage(delayMs = 0) {
+  setSkipNextUserMessage(delayMs = 1000) {
     if (this.#skipNextUserMessageTimer) {
       clearTimeout(this.#skipNextUserMessageTimer);
       this.#skipNextUserMessageTimer = null;
@@ -49,7 +50,7 @@ export class OpenCodeTrueIdleDetector {
     }
   }
 
-  setSkipNextIdleExit(delayMs = 0) {
+  setSkipNextIdleExit(delayMs = 2000) {
     if (this.#skipNextIdleExitTimer) {
       clearTimeout(this.#skipNextIdleExitTimer);
       this.#skipNextIdleExitTimer = null;
@@ -70,6 +71,10 @@ export class OpenCodeTrueIdleDetector {
       this.#skipNextUserMessageTimer = null;
     }
     this.#skipNextUserMessage = false;
+  }
+
+  setPromptInFlight(value) {
+    this.#promptInFlight = value;
   }
 
   #scheduleCheck(sessionID, delay) {
@@ -121,6 +126,23 @@ export class OpenCodeTrueIdleDetector {
     this.#log('RESET', `session=${sessionID} state reset on user input`);
   }
 
+  handleUserInput(sessionID) {
+    if (this.#pendingCheck) {
+      clearTimeout(this.#pendingCheck);
+      this.#pendingCheck = null;
+    }
+    if (this.#status === 'idle') {
+      this.#log('IDLE_END', `session=${sessionID} handleUserInput while idle`);
+      this.#onIdleExit?.(sessionID);
+    }
+    this.#interrupted = false;
+    this.#waitingPermission = false;
+    this.#waitingQuestion = false;
+    this.#status = 'busy';
+    this.#currentDelay = this.#BASE_DELAY;
+    this.#log('RESET', `session=${sessionID} state reset on user input`);
+  }
+
   handleChatMessage(input, output) {
     const { sessionID, messageID } = input;
     const { message } = output;
@@ -130,10 +152,14 @@ export class OpenCodeTrueIdleDetector {
       this.#interrupted = true;
       this.#log('INTERRUPT', `session=${sessionID} msg=${messageID} AI response aborted by user`);
       this.#onUserInterrupt?.(sessionID);
-    } else if (role === 'user' && !this.#skipNextUserMessage) {
-      this.#log('USER_INPUT', `session=${sessionID} msg=${messageID} manual user input`);
-      this.handleUserInput(sessionID);
-      this.#onUserInput?.(sessionID);
+    } else if (role === 'user') {
+      if (!this.#skipNextUserMessage) {
+        this.#log('USER_INPUT', `session=${sessionID} msg=${messageID} manual user input`);
+        if (!this.#promptInFlight) {
+          this.handleUserInput(sessionID);
+          this.#onUserInput?.(sessionID);
+        }
+      }
     }
     this.#skipNextUserMessage = false;
   }

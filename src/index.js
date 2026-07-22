@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { homedir } from 'node:os';
 import { OpenCodeTrueIdleDetector } from './opencode-true-idle-detector.js';
+import { SubagentTrigger } from './subagent-trigger.js';
 import { FileWatch, WaitState } from './wait-state.js';
 import { readFileSnapshot, fileChanged, loadPromptFile } from './file-utils.js';
 
@@ -13,6 +14,9 @@ const DEFAULT_CONFIG = {
   check_interval_minutes: 30,
   max_idle_cycles: 5,
   enabled: true,
+  subagent_enabled: false,
+  subagent_agent_type: 'explore',
+  subagent_delay_ms: 60_000,
 };
 
 function createLogger(logDir) {
@@ -52,7 +56,7 @@ function loadConfig(directory) {
   }
 }
 
-const server = async (input) => {
+  const server = async (input) => {
   const { directory, client } = input;
   const logDir = path.join(directory, '.log');
   const log = createLogger(logDir);
@@ -71,6 +75,69 @@ const server = async (input) => {
 
   let sessionStatus = 'idle';
   let activeSessionID = null;
+  let mainSessionID = null;
+  let pendingTimer = null;
+
+  function cancelPendingTimer(sessionID) {
+    if (pendingTimer) {
+      clearTimeout(pendingTimer);
+      pendingTimer = null;
+      log('CANCEL', `session=${sessionID} cancelled scheduled trigger`);
+    }
+  }
+
+  const detector = new OpenCodeTrueIdleDetector({
+    log,
+    onIdle: async (sessionID) => {
+      if (!config.enabled) {
+        log('SKIP', 'Plugin disabled');
+        return;
+      }
+      activeSessionID = sessionID;
+      mainSessionID = sessionID;
+      log('ON_IDLE', `session=${sessionID} triggered`);
+
+      if (config.subagent_enabled) {
+        if (trigger.inFlight) {
+          log('SKIP', `session=${sessionID} trigger in flight`);
+          return;
+        }
+        if (pendingTimer) {
+          log('SKIP', `session=${sessionID} trigger already scheduled`);
+          return;
+        }
+        pendingTimer = setTimeout(() => {
+          pendingTimer = null;
+          trigger.trigger(sessionID, {
+            agentType: config.subagent_agent_type,
+            prompt: fileWatch.readPrompt(),
+          });
+        }, config.subagent_delay_ms);
+        log('SCHEDULE', `session=${sessionID} subagent trigger scheduled in ${config.subagent_delay_ms}ms`);
+      } else {
+        waitState.onIdle(sessionID);
+      }
+    },
+    onIdleExit: (sessionID) => {
+      if (!config.enabled) return;
+      log('ON_IDLE_EXIT', `session=${sessionID} idle exit`);
+      cancelPendingTimer(sessionID);
+      waitState.onIdleExit();
+    },
+    onUserInterrupt: (sessionID) => {
+      if (mainSessionID && sessionID !== mainSessionID) return;
+      cancelPendingTimer(sessionID);
+      log('INTERRUPT', `session=${sessionID} user interrupt`);
+      waitState.onUserInterrupt(sessionID);
+    },
+    onUserInput: (sessionID) => {
+      if (mainSessionID && sessionID !== mainSessionID) return;
+      cancelPendingTimer(sessionID);
+      waitState.onUserInput(sessionID);
+    },
+  });
+
+  const trigger = new SubagentTrigger({ client, detector, log, directory });
 
   async function sendPrompt(sessionID) {
     const promptContent = fileWatch.readPrompt();
@@ -138,13 +205,19 @@ const server = async (input) => {
   log('INIT', `Plugin idle-continue initialized | directory=${directory}`);
   log('DESIGN', JSON.stringify({
     signals: ['session.status', 'session.idle', 'permission.asked', 'permission.replied', 'question.asked', 'question.replied2', 'question.rejected2', 'chat.message'],
-    rule: 'TRUE_IDLE -> send prompt -> check watch_files -> wait state if unchanged -> periodic resend with backoff',
+    subagent_enabled: config.subagent_enabled,
+    rule: config.subagent_enabled 
+      ? 'TRUE_IDLE -> wait delay -> subagent trigger via Task tool'
+      : 'TRUE_IDLE -> send prompt -> check watch_files -> wait state if unchanged -> periodic resend with backoff',
     config: {
       prompt_file: config.prompt_file,
       watch_files: config.watch_files,
       check_interval_minutes: config.check_interval_minutes,
       max_idle_cycles: config.max_idle_cycles,
       enabled: config.enabled,
+      subagent_enabled: config.subagent_enabled,
+      subagent_agent_type: config.subagent_agent_type,
+      subagent_delay_ms: config.subagent_delay_ms,
     },
   }));
 
@@ -183,6 +256,7 @@ const server = async (input) => {
 
     dispose: async () => {
       log('DISPOSE', 'Plugin shutting down');
+      cancelPendingTimer('dispose');
       waitState.dispose();
       detector.dispose();
     },
