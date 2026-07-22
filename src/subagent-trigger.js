@@ -62,7 +62,7 @@ export class SubagentTrigger {
     this.#inFlight = true;
     this.#count++;
 
-    const desc = description || `subagent-hello #${this.#count}`;
+    const desc = description || `subagent #${this.#count}`;
     const instruction = this.#buildInstruction(agentType, subPrompt, desc, background);
 
     this.#log(
@@ -92,25 +92,45 @@ export class SubagentTrigger {
   }
 
   /**
-   * 构建指示主 agent 调用 Task 工具的 prompt 文本。
-   * 该文本会作为 user message 出现在主会话中。
+   * 构建指示主 Agent 立即调用 Task 工具的指令提示词。
+   * 此文本将作为 user message 注入主会话，强制触发工具调用。
+   * 
+   * @param {string} agentType - 子代理类型标识
+   * @param {string} subPrompt - 传递给子代理的核心提示词（可能包含多行/特殊字符）
+   * @param {string} description - 任务的简短描述
+   * @param {string} [background] - 可选的背景信息
+   * @returns {string} 格式化后的工具调用指令
    */
   #buildInstruction(agentType, subPrompt, description, background) {
+    // 使用 JSON.stringify 安全转义，确保换行符、引号、特殊字符被正确处理
+    const safePrompt = JSON.stringify(subPrompt);
+    const safeDesc = JSON.stringify(description);
+
     const lines = [
-      '[subagent-hello 自动触发]',
+      '[SYSTEM: SUBAGENT_TRIGGER]',
       '',
-      '请立即调用 Task 工具，使用以下参数：',
-      `- subagent_type: "${agentType}"`,
+      'You must call the "Task" tool immediately with the following parameters.',
+      'Do NOT output any text, explanation, or markdown. Only execute the tool call.',
+      '',
+      'Tool arguments (JSON format):',
+      '{',
+      `  "subagent_type": "${agentType}",`,
+      `  "description": ${safeDesc},`  // 注意此处无额外引号，因为 stringify 已包含
     ];
+
+    // 仅在 background 有值时添加，避免传入空字符串或 undefined
     if (background) {
-      lines.push(`- background: ${background}`);
+      const safeBg = JSON.stringify(background);
+      lines.push(`  "background": ${safeBg},`);
     }
+
     lines.push(
-      `- description: "${description}"`,
-      `- prompt: "${subPrompt}"`,
+      `  "prompt": ${safePrompt}`,
+      '}',
       '',
-      '直接调用 Task 工具，不要添加任何额外评论或解释。',
+      'CRITICAL: Reply with the tool call only. No introductory phrases.'
     );
+
     return lines.join('\n');
   }
 }
