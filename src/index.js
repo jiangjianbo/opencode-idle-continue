@@ -153,8 +153,9 @@ function loadConfig(directory) {
     }
 
     log('PROMPT', `session=${sid} sending prompt (len=${promptContent.length})`);
-    detector.setSkipNextUserMessage(1000);  // 1s 后自动清除，防止提示词被误识别
-    detector.setSkipNextIdleExit(2000);     // 2s 后自动清除，防止发送期间触发 idle exit
+    detector.setPromptInFlight(true);
+    detector.setSkipNextIdleExit(60000);  // Skip idle->busy transition for 60 seconds
+    detector.setSkipNextUserMessage(5000);  // Skip plugin's own message as user input
     
     try {
       await client.session.prompt({
@@ -166,6 +167,8 @@ function loadConfig(directory) {
       log('PROMPT_DONE', `session=${sid} reply complete`);
     } catch (err) {
       log('PROMPT_ERR', `session=${sid} ${err.message}`);
+    } finally {
+      detector.setPromptInFlight(false);
     }
   }
 
@@ -176,30 +179,6 @@ function loadConfig(directory) {
     sendPrompt,
     isSessionIdle: () => sessionStatus === 'idle',
     log,
-  });
-
-  const detector = new OpenCodeTrueIdleDetector({
-    log,
-    onIdle: async (sessionID) => {
-      if (!config.enabled) {
-        log('SKIP', 'Plugin disabled');
-        return;
-      }
-      activeSessionID = sessionID;
-      log('ON_IDLE', `session=${sessionID} triggered`);
-      waitState.onIdle(sessionID);
-    },
-    onIdleExit: (sessionID) => {
-      if (!config.enabled) return;
-      log('ON_IDLE_EXIT', `session=${sessionID} idle exit`);
-      waitState.onIdleExit();
-    },
-    onUserInterrupt: (sessionID) => {
-      waitState.onUserInterrupt(sessionID);
-    },
-    onUserInput: (sessionID) => {
-      waitState.onUserInput(sessionID);
-    },
   });
 
   log('INIT', `Plugin idle-continue initialized | directory=${directory}`);
