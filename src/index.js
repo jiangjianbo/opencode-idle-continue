@@ -154,8 +154,8 @@ function loadConfig(directory) {
 
     log('PROMPT', `session=${sid} sending prompt (len=${promptContent.length})`);
     detector.setPromptInFlight(true);
-    detector.setSkipNextIdleExit(60000);  // Skip idle->busy transition for 60 seconds
-    detector.setSkipNextUserMessage(5000);  // Skip plugin's own message as user input
+    detector.setSkipNextIdleExit(1000);  // Skip idle->busy transition for 1 seconds
+    detector.setSkipNextUserMessage(2000);  // Skip plugin's own message as user input
     
     try {
       await client.session.prompt({
