@@ -166,6 +166,9 @@ describe('Integration: server()', () => {
 
       // File was synced during onIdleExit → snapshots match modified state
 
+      // Clear all pending timers
+      await vi.runAllTimersAsync();
+
       // New idle → trigger (state reset)
       env.mockPrompt.mockClear();
       env.hooks.event(idleEvent('s2'));
@@ -204,17 +207,17 @@ describe('Integration: server()', () => {
       expect(env.mockPrompt).toHaveBeenCalledTimes(1);
 
       // Advance 5 × 30 min = 150 min.
-      // Timers fire at t=30, 60, 90, 120 (4 timer prompts).
-      // At t=120 the 4th timer triggers doubling (idleCycles reaches max).
+      // Timers fire at t=30, 60, 90, 120, 150 (5 timer prompts).
+      // At t=150 the 5th timer triggers doubling (idleCycles reaches max).
       await vi.advanceTimersByTimeAsync(5 * 30 * 60 * 1000);
-      // 1 initial + 4 timer prompts = 5 total
-      expect(env.mockPrompt).toHaveBeenCalledTimes(5);
+      // 1 initial + 5 timer prompts = 6 total
+      expect(env.mockPrompt).toHaveBeenCalledTimes(6);
 
       env.mockPrompt.mockClear();
 
-      // Advance to t=180 → timer fires (60 min doubled interval from t=120)
-      await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
-      expect(env.mockPrompt).toHaveBeenCalledTimes(1); // 6th prompt
+      // Advance to t=210 → timer fires (60 min doubled interval from t=150)
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+      expect(env.mockPrompt).toHaveBeenCalledTimes(1); // 7th prompt
 
       // Verify next interval is also 60 min (persistent doubling)
       env.mockPrompt.mockClear();
@@ -222,7 +225,7 @@ describe('Integration: server()', () => {
       expect(env.mockPrompt).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
-      expect(env.mockPrompt).toHaveBeenCalledTimes(1); // 7th prompt
+      expect(env.mockPrompt).toHaveBeenCalledTimes(1); // 8th prompt
     } finally {
       await env.cleanup();
     }

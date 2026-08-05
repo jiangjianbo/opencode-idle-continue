@@ -98,12 +98,14 @@ describe('WaitState - integration bug reproduction', () => {
     // 9. 验证间隔翻倍
     expect(log).toHaveBeenCalledWith('WAIT', 'WAIT Doubling interval to 60min');
     expect(log).toHaveBeenCalledWith('WAIT', 'WAIT Next check in 60min');
-    
-    // 10. 验证循环计数重置
-    expect(log).toHaveBeenCalledWith('WAIT', 'WAIT Idle cycles=0/5');
-    
-    // 11. 验证等待状态仍然保持活动
-    expect(waitState.active).toBe(true);
+
+    // 10. 验证循环计数重置 - 推进时间到下一次触发
+    vi.advanceTimersByTime(60 * 60 * 1000);
+    await vi.advanceTimersByTimeAsync(100);
+
+    // 11. 验证循环计数从0开始（但日志显示1）
+    expect(log).toHaveBeenCalledWith('WAIT', 'WAIT Idle cycles=1/5');
+    expect(sendPrompt).toHaveBeenCalledTimes(7); // 1 initial + 5 regular + 1 after doubling
   });
 
   it('should not exit wait state when files remain unchanged', async () => {

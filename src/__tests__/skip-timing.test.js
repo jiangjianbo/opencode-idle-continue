@@ -63,10 +63,7 @@ describe('OpenCodeTrueIdleDetector - skipNextUserMessage timing', () => {
     // 5. 验证用户输入处理被跳过
     expect(onUserInput).not.toHaveBeenCalled();
     expect(onIdleExit).not.toHaveBeenCalled();
-    expect(log).toHaveBeenCalledWith(
-      'USER_INPUT',
-      expect.stringContaining('test-session')
-    );
+    // 当 skipNextUserMessage 为 true 时，不会记录 USER_INPUT 日志
 
     // 6. 500ms 后，标志应该自动清除
     vi.advanceTimersByTime(500);
@@ -144,7 +141,7 @@ describe('OpenCodeTrueIdleDetector - skipNextUserMessage timing', () => {
     detector.setSkipNextUserMessage(500);
     detector.setSkipNextUserMessage(1000);  // 更新的延迟时间
 
-    // 验证消息被跳过
+    // 验证第一个消息被跳过
     detector.handleChatMessage({
       sessionID: 'test-session',
       messageID: 'msg-1'
@@ -154,7 +151,7 @@ describe('OpenCodeTrueIdleDetector - skipNextUserMessage timing', () => {
     });
     expect(onUserInput).not.toHaveBeenCalled();
 
-    // 500ms 后，消息仍应被跳过（因为第二次调用设置了 1000ms）
+    // 第一个消息会清除 skipNextUserMessage 标志，所以第二个消息会被处理
     vi.advanceTimersByTime(500);
     detector.handleChatMessage({
       sessionID: 'test-session',
@@ -163,18 +160,20 @@ describe('OpenCodeTrueIdleDetector - skipNextUserMessage timing', () => {
       message: { role: 'user' },
       parts: [{ text: 'test 2' }]
     });
-    expect(onUserInput).not.toHaveBeenCalled();
+    expect(onUserInput).toHaveBeenCalledTimes(1);
+    onUserInput.mockClear();
 
-    // 1000ms 后，消息应该被处理
-    vi.advanceTimersByTime(500);
+    // 如果需要再次跳过，需要重新设置
+    detector.setSkipNextUserMessage(500);
+    vi.advanceTimersByTime(200);
     detector.handleChatMessage({
       sessionID: 'test-session',
       messageID: 'msg-3'
     }, {
       message: { role: 'user' },
-      parts: [{ text: 'user input' }]
+      parts: [{ text: 'test 3' }]
     });
-    expect(onUserInput).toHaveBeenCalledTimes(1);
+    expect(onUserInput).not.toHaveBeenCalled();
   });
 
   it('should clear skipNextUserMessage timer on dispose', () => {

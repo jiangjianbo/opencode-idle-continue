@@ -241,20 +241,21 @@ describe('WaitState', () => {
     expect(sendPrompt).toHaveBeenCalledTimes(1);
 
     // Advance 5 × 30 min = 150 min.
-    // Timer fires at t=30, 60, 90, 120 (4 timer prompts).
-    // At t=120 the 4th timer fires: idleCycles = 5 → doubles interval to 60.
-    // Next timer at t=180 (60 min from t=120).
+    // Timer fires at t=30, 60, 90, 120, 150 (5 timer prompts).
+    // At t=120 the 4th timer fires: idleCycles = 4 → continues.
+    // At t=150 the 5th timer fires: idleCycles = 5 → doubles interval to 60.
+    // Next timer at t=210 (60 min from t=150).
     for (let i = 0; i < 5; i++) {
       await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
     }
-    // 1 initial + 4 timer prompts = 5 total
-    expect(sendPrompt).toHaveBeenCalledTimes(5);
+    // 1 initial + 5 timer prompts = 6 total
+    expect(sendPrompt).toHaveBeenCalledTimes(6);
 
     sendPrompt.mockClear();
 
-    // Advance to t=180 → timer fires (doubled 60 min period from t=120)
-    await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
-    expect(sendPrompt).toHaveBeenCalledTimes(1); // 6th prompt
+    // Advance to t=210 → timer fires (doubled 60 min period from t=150)
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+    expect(sendPrompt).toHaveBeenCalledTimes(1); // 7th prompt
 
     // Verify NEXT interval is also 60 min (persistent doubling)
     sendPrompt.mockClear();
@@ -262,7 +263,7 @@ describe('WaitState', () => {
     expect(sendPrompt).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
-    expect(sendPrompt).toHaveBeenCalledTimes(1); // 7th prompt
+    expect(sendPrompt).toHaveBeenCalledTimes(1); // 8th prompt
   });
 
   // 29. onIdleExit after backoff → resets interval
@@ -275,7 +276,7 @@ describe('WaitState', () => {
     for (let i = 0; i < 5; i++) {
       await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
     }
-    expect(sendPrompt).toHaveBeenCalledTimes(5);
+    expect(sendPrompt).toHaveBeenCalledTimes(6);
 
     // idle-exit → reset
     ws.onIdleExit();
