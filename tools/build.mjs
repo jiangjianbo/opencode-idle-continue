@@ -4,6 +4,20 @@ import path from 'node:path';
 const srcDir = 'src';
 const distDir = 'dist';
 
+// Clean dist directory first
+if (fs.existsSync(distDir)) {
+  const items = fs.readdirSync(distDir);
+  for (const item of items) {
+    const itemPath = path.join(distDir, item);
+    const stat = fs.statSync(itemPath);
+    if (stat.isDirectory()) {
+      fs.rmSync(itemPath, { recursive: true, force: true });
+    } else {
+      fs.unlinkSync(itemPath);
+    }
+  }
+}
+
 fs.mkdirSync(distDir, { recursive: true });
 fs.mkdirSync(path.join(distDir, 'cli'), { recursive: true });
 
@@ -35,7 +49,12 @@ const distPkg = {
       "default": "./index.js"
     }
   },
-  files: rootPkg.files,
+  files: [
+    "*.js",
+    "cli/",
+    "README.md",
+    "LICENSE"
+  ],
   keywords: rootPkg.keywords,
   dependencies: rootPkg.dependencies
 };

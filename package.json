@@ -12,9 +12,12 @@
     }
   },
   "files": [
-    "dist/",
+    "*.js",
+    "cli/",
     "README.md",
-    "LICENSE"
+    "README.zh.md",
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "node tools/build.mjs",
@@ -25,7 +28,7 @@
   },
   "keywords": ["opencode", "opencode-plugin"],
   "dependencies": {
-    "@opencode-ai/plugin": "^1.17.11"
+    "@opencode-ai/plugin": "^1.18.13"
   },
   "devDependencies": {
     "vitest": "^3.0.0"

@@ -208,3 +208,7 @@ opencode-idle-continue/
 ## License
 
 MIT
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for a list of changes in each version.
