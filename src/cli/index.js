@@ -2,7 +2,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import packageJson from '../package.json' with { type: 'json' };
+import packageJson from '../../package.json' with { type: 'json' };
 
 const { version } = packageJson;
 
@@ -68,9 +68,13 @@ Commands:
   install [system|local|<path>]  Install the plugin to opencode configuration
                                  - system: Install to system config (~/.config/opencode/)
                                  - local:  Install to current project (.opencode/)
-                                 - <path>:  Install to specified directory (e.g., e:\\work\\xxx)
+                                 - <path>:  Install to specified directory (e.g., e:\\\\work\\\\xxx)
+  uninstall [system|local|<path>] Remove the plugin from opencode config
+                                 - system: Remove from system config (~/.config/opencode/)
+                                 - local:  Remove from current project (.opencode/)
+                                 - <path>:  Remove from specified directory
+                                 --clean: Also remove plugin config file
   update                          Refresh opencode's plugin cache
-  uninstall                       Remove the plugin from opencode config
   -h, --help                      Show this help message
   -v, --version                   Show version
 
@@ -80,12 +84,20 @@ Configuration:
   Custom prompt:  idle-prompt.md (in project directory)
 
 Examples:
-  opencode-idle-continue install system
-  opencode-idle-continue install local
-  opencode-idle-continue install e:\\work\\myproject
-  opencode-idle-continue install /home/user/project
-  opencode-idle-continue update
-  opencode-idle-continue uninstall
+   install examples:
+   opencode-idle-continue install system
+   opencode-idle-continue install local
+   opencode-idle-continue install e:\\\\work\\\\myproject
+   opencode-idle-continue install /home/user/project
+
+   update example:
+   opencode-idle-continue update
+
+   uninstall examples:
+   opencode-idle-continue uninstall system
+   opencode-idle-continue uninstall local
+   opencode-idle-continue uninstall /home/user/project
+   opencode-idle-continue uninstall --clean  # also remove plugin config
   `);
 }
 
@@ -299,7 +311,20 @@ async function update() {
 }
 
 async function uninstall() {
-  console.log(`🗑️  Uninstalling ${PLUGIN_NAME}...\n`);
+  const args = process.argv.slice(2);
+  const uninstallMode = args[1] || 'system';
+
+  if (uninstallMode === 'system') {
+    return uninstallFromSystem();
+  } else if (uninstallMode === 'local') {
+    return uninstallFromLocal();
+  } else {
+    return uninstallFromDir(uninstallMode);
+  }
+}
+
+async function uninstallFromSystem() {
+  console.log(`🗑️  Uninstalling ${PLUGIN_NAME} from system config...\n`);
 
   let opencodeConfig = loadJson(OPENCODE_CONFIG_PATH);
   
@@ -331,6 +356,102 @@ async function uninstall() {
     if (fs.existsSync(PLUGIN_CONFIG_PATH)) {
       fs.unlinkSync(PLUGIN_CONFIG_PATH);
       console.log(`✓ Removed plugin config: ${PLUGIN_CONFIG_PATH}`);
+    }
+  }
+
+  console.log('\n✅ Uninstall complete!');
+  return 0;
+}
+
+async function uninstallFromLocal() {
+  const cwd = process.cwd();
+  const root = findProjectRoot(cwd);
+  const projectRoot = root || cwd;
+  const opencodeDir = path.join(projectRoot, '.opencode');
+  const localConfigPath = path.join(opencodeDir, 'opencode.json');
+  const pluginConfigPath = path.join(opencodeDir, 'idle-continue.json');
+
+  console.log(`🗑️  Uninstalling ${PLUGIN_NAME} from local project...\n`);
+  console.log(`📁 Target directory: ${projectRoot}\n`);
+
+  if (!fs.existsSync(localConfigPath)) {
+    console.log(`⚠ No opencode config found at: ${localConfigPath}`);
+    return 0;
+  }
+
+  let opencodeConfig = loadJson(localConfigPath);
+  
+  if (!opencodeConfig || !opencodeConfig.plugin || opencodeConfig.plugin.length === 0) {
+    console.log(`⚠ ${PLUGIN_NAME} is not installed.`);
+    return 0;
+  }
+
+  const filteredPlugins = opencodeConfig.plugin.filter(
+    (p) => p !== PLUGIN_NAME && !p.startsWith(`${PLUGIN_NAME}@`)
+  );
+
+  if (filteredPlugins.length === opencodeConfig.plugin.length) {
+    console.log(`⚠ ${PLUGIN_NAME} is not installed.`);
+    return 0;
+  }
+
+  opencodeConfig.plugin = filteredPlugins;
+  saveJson(localConfigPath, opencodeConfig);
+  console.log(`✓ Removed ${PLUGIN_NAME} from local plugins`);
+  console.log(`✓ Local config: ${localConfigPath}`);
+
+  const cleanFlag = process.argv.includes('--clean');
+  if (cleanFlag) {
+    if (fs.existsSync(pluginConfigPath)) {
+      fs.unlinkSync(pluginConfigPath);
+      console.log(`✓ Removed plugin config: ${pluginConfigPath}`);
+    }
+  }
+
+  console.log('\n✅ Uninstall complete!');
+  return 0;
+}
+
+async function uninstallFromDir(targetDir) {
+  const resolvedDir = path.resolve(targetDir);
+  const opencodeDir = path.join(resolvedDir, '.opencode');
+  const localConfigPath = path.join(opencodeDir, 'opencode.json');
+  const pluginConfigPath = path.join(opencodeDir, 'idle-continue.json');
+
+  console.log(`🗑️  Uninstalling ${PLUGIN_NAME} from directory...\n`);
+  console.log(`📁 Target directory: ${resolvedDir}\n`);
+
+  if (!fs.existsSync(localConfigPath)) {
+    console.log(`⚠ No opencode config found at: ${localConfigPath}`);
+    return 0;
+  }
+
+  let opencodeConfig = loadJson(localConfigPath);
+  
+  if (!opencodeConfig || !opencodeConfig.plugin || opencodeConfig.plugin.length === 0) {
+    console.log(`⚠ ${PLUGIN_NAME} is not installed.`);
+    return 0;
+  }
+
+  const filteredPlugins = opencodeConfig.plugin.filter(
+    (p) => p !== PLUGIN_NAME && !p.startsWith(`${PLUGIN_NAME}@`)
+  );
+
+  if (filteredPlugins.length === opencodeConfig.plugin.length) {
+    console.log(`⚠ ${PLUGIN_NAME} is not installed.`);
+    return 0;
+  }
+
+  opencodeConfig.plugin = filteredPlugins;
+  saveJson(localConfigPath, opencodeConfig);
+  console.log(`✓ Removed ${PLUGIN_NAME} from plugins`);
+  console.log(`✓ Config: ${localConfigPath}`);
+
+  const cleanFlag = process.argv.includes('--clean');
+  if (cleanFlag) {
+    if (fs.existsSync(pluginConfigPath)) {
+      fs.unlinkSync(pluginConfigPath);
+      console.log(`✓ Removed plugin config: ${pluginConfigPath}`);
     }
   }
 
