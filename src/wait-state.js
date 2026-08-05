@@ -1,4 +1,4 @@
-import { readFileSnapshot, fileChanged, getFileMtime, loadPromptFile } from './file-utils.js';
+import { readFileSnapshot, fileChanged, getFileMtime, loadPromptFile, readDirectorySnapshot, directoryChanged, isDirectory } from './file-utils.js';
 
 export class FileWatch {
   #promptFilePath;
@@ -13,7 +13,7 @@ export class FileWatch {
     this.#log = log;
     this.#promptCache = loadPromptFile(promptFilePath);
     this.#snapshots = new Map(
-      watchFilePaths.map(fp => [fp, readFileSnapshot(fp)]),
+      watchFilePaths.map(fp => [fp, isDirectory(fp) ? readDirectorySnapshot(fp) : readFileSnapshot(fp)]),
     );
   }
 
@@ -28,14 +28,19 @@ export class FileWatch {
 
   hasFilesChanged() {
     for (const fp of this.#watchPaths) {
-      if (fileChanged(this.#snapshots.get(fp), fp)) return true;
+      const prev = this.#snapshots.get(fp);
+      if (isDirectory(fp)) {
+        if (directoryChanged(prev, fp)) return true;
+      } else {
+        if (fileChanged(prev, fp)) return true;
+      }
     }
     return false;
   }
 
   syncToLatest() {
     for (const fp of this.#watchPaths) {
-      this.#snapshots.set(fp, readFileSnapshot(fp));
+      this.#snapshots.set(fp, isDirectory(fp) ? readDirectorySnapshot(fp) : readFileSnapshot(fp));
     }
   }
 }

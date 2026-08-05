@@ -14,6 +14,14 @@ vi.mock('../file-utils.js', () => {
     }),
     getFileMtime: vi.fn((fp) => state[fp]?.prompt?.mtime ?? 0),
     loadPromptFile: vi.fn((fp) => state[fp]?.prompt ?? { content: '', mtime: 0 }),
+    isDirectory: vi.fn((fp) => state[fp]?.isDirectory ?? false),
+    readDirectorySnapshot: vi.fn((fp) => state[fp]?.directorySnapshot ?? null),
+    directoryChanged: vi.fn((prev, fp) => {
+      const cur = state[fp]?.directorySnapshot;
+      if (cur === null && prev === null) return false;
+      if (cur === null || prev === null) return true;
+      return JSON.stringify(cur) !== JSON.stringify(prev);
+    }),
     __setState(s) { state = s; },
   };
 });
