@@ -1,4 +1,4 @@
-import { readFileSnapshot, fileChanged, getFileMtime, loadPromptFile, readDirectorySnapshot, directoryChanged, isDirectory } from './file-utils.js';
+import { readFileSnapshot, fileChanged, getFileMtime, loadPromptFile, readDirectorySnapshot, directoryChanged, isDirectory, fileExists, getDefaultPrompt } from './file-utils.js';
 
 export class FileWatch {
   #promptFilePath;
@@ -6,24 +6,45 @@ export class FileWatch {
   #promptCache;
   #snapshots;
   #log;
+  #enableDefaultPrompt;
+  #directory;
 
-  constructor({ promptFilePath, watchFilePaths, log }) {
+  constructor({ promptFilePath, watchFilePaths, log, enableDefaultPrompt, directory }) {
     this.#promptFilePath = promptFilePath;
     this.#watchPaths = watchFilePaths;
     this.#log = log;
-    this.#promptCache = loadPromptFile(promptFilePath);
+    this.#enableDefaultPrompt = enableDefaultPrompt;
+    this.#directory = directory;
+    
+    const promptExists = fileExists(promptFilePath);
+    if (promptExists) {
+      this.#promptCache = loadPromptFile(promptFilePath);
+    } else if (enableDefaultPrompt) {
+      this.#promptCache = { content: getDefaultPrompt(), mtime: 0 };
+    } else {
+      this.#promptCache = { content: '', mtime: 0 };
+    }
+    
     this.#snapshots = new Map(
       watchFilePaths.map(fp => [fp, isDirectory(fp) ? readDirectorySnapshot(fp) : readFileSnapshot(fp)]),
     );
   }
 
   readPrompt() {
-    const mtime = getFileMtime(this.#promptFilePath);
-    if (mtime !== this.#promptCache.mtime) {
-      this.#promptCache = loadPromptFile(this.#promptFilePath);
-      this.#log?.('HOT_RELOAD', `Prompt file reloaded: ${this.#promptFilePath}`);
+    const promptExists = fileExists(this.#promptFilePath);
+    
+    if (promptExists) {
+      const mtime = getFileMtime(this.#promptFilePath);
+      if (mtime !== this.#promptCache.mtime) {
+        this.#promptCache = loadPromptFile(this.#promptFilePath);
+        this.#log('HOT_RELOAD', `Prompt file reloaded: ${this.#promptFilePath}`);
+      }
+      return this.#promptCache.content;
+    } else if (this.#enableDefaultPrompt) {
+      return getDefaultPrompt();
+    } else {
+      return '';
     }
-    return this.#promptCache.content;
   }
 
   hasFilesChanged() {

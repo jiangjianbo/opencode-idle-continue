@@ -1,0 +1,2 @@
+npm config set //registry.npmjs.org/:_authToken    $npm_PUBLISH_KEYS
+npm publish --registry https://registry.npmjs.org

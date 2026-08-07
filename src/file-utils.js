@@ -1,5 +1,7 @@
 import fs from 'node:fs';
 
+const DEFAULT_PROMPT = `You are a helpful AI assistant. Please continue working on the current task or project context. Review any existing files, understand the current state, and suggest next steps or continue with the implementation.`;
+
 export function readFileSnapshot(filePath) {
   try {
     const stat = fs.statSync(filePath);
@@ -80,6 +82,19 @@ export function getFileMtime(filePath) {
   } catch {
     return 0;
   }
+}
+
+export function fileExists(filePath) {
+  try {
+    fs.statSync(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function getDefaultPrompt() {
+  return DEFAULT_PROMPT;
 }
 
 export function loadPromptFile(filePath) {

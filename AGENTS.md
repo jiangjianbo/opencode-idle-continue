@@ -9,7 +9,14 @@
 ### 模式 1：传统模式（默认）
 
 1. **空闲检测**：监控系统空闲状态。当 opencode 处于空闲状态时触发后续逻辑。
-2. **发送提示词**：从指定的 markdown 文件中读取提示内容并发送给 opencode 继续处理。
+2. **发送提示词**：按照配置文件的查找次序寻找提示词文档，读取提示内容并发送给 opencode 继续处理。提示词文件查找顺序：
+   - `{directory}/{prompt_file}`（如 `idle-prompt.md`）
+   - `{directory}/.opencode/{prompt_file}`（如 `.opencode/idle-prompt.md`）
+   - `~/.config/opencode/{prompt_file}`（如 `~/.config/opencode/idle-prompt.md`）
+   
+   如果提示词文件不存在：
+   - 当 `enable_default_prompt` 为 `false`（默认）时，不发送任何消息
+   - 当 `enable_default_prompt` 为 `true` 时，发送内置的默认提示词
 3. **提示词热重载**：每次使用 `prompt_file` 时检查文件是否已修改。未修改则使用缓存内容，已修改则重新读入并更新缓存，无需重启插件。
 4. **文件变更监控**：维护一个检测文件列表，监控这些文件的内容/时间戳是否变化。
 5. **等待状态**：如果发送提示词后检测文件列表中的文件没有变化，则进入等待状态。等待状态需要同时满足：
@@ -42,6 +49,8 @@
 | `check_interval_minutes` | number | `30` | 等待状态下的检测间隔（分钟） |
 | `max_idle_cycles` | number | `5` | 连续空闲次数阈值，超限后间隔翻倍 |
 | `enabled` | boolean | `true` | 是否启用插件 |
+| `log_enabled` | boolean | `false` | 是否启用日志 |
+| `enable_default_prompt` | boolean | `false` | 是否启用默认提示词 |
 | `subagent_enabled` | boolean | `false` | 是否启用子代理模式 |
 | `subagent_agent_type` | string | `"explore"` | 子代理类型（仅 subagent_enabled=true 时生效） |
 | `subagent_delay_ms` | number | `60_000` | 子代理触发延迟（毫秒，仅 subagent_enabled=true 时生效） |
@@ -64,6 +73,11 @@
 - `task.md` — 默认检测文件之一，记录当前任务
 - `wish-list.md` — 默认检测文件之一，记录待办愿望清单
 - `idle-continue.json` — 配置文件
+
+**默认提示词**：当 `enable_default_prompt` 为 `true` 且提示词文件不存在时，使用内置的默认提示词：
+```
+You are a helpful AI assistant. Please continue working on the current task or project context. Review any existing files, understand the current state, and suggest next steps or continue with the implementation.
+```
 
 ## 项目结构
 

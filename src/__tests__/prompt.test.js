@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { loadPromptFile } from '../file-utils.js';
+import { loadPromptFile, fileExists, getDefaultPrompt } from '../file-utils.js';
 
 function tempFile(content) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'prompt-test-'));
@@ -10,6 +10,30 @@ function tempFile(content) {
   fs.writeFileSync(fp, content, 'utf-8');
   return { dir, fp };
 }
+
+describe('fileExists', () => {
+  it('should return true for existing file', () => {
+    const { dir, fp } = tempFile('test');
+    try {
+      expect(fileExists(fp)).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('should return false for non-existent file', () => {
+    expect(fileExists('/tmp/nonexistent-file-12345.md')).toBe(false);
+  });
+});
+
+describe('getDefaultPrompt', () => {
+  it('should return the default prompt string', () => {
+    const defaultPrompt = getDefaultPrompt();
+    expect(typeof defaultPrompt).toBe('string');
+    expect(defaultPrompt.length).toBeGreaterThan(0);
+    expect(defaultPrompt).toContain('helpful AI assistant');
+  });
+});
 
 describe('loadPromptFile', () => {
   // 13. Reads existing file

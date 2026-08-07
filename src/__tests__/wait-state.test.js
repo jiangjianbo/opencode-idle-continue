@@ -4,6 +4,7 @@ import { FileWatch, WaitState } from '../wait-state.js';
 // Mock file-system-level functions
 vi.mock('../file-utils.js', () => {
   let state = {};
+  const DEFAULT_PROMPT_TEXT = 'You are a helpful AI assistant. Please continue working on the current task or project context. Review any existing files, understand the current state, and suggest next steps or continue with the implementation.';
   return {
     readFileSnapshot: vi.fn((fp) => state[fp]?.snapshot ?? null),
     fileChanged: vi.fn((snap, fp) => {
@@ -22,6 +23,8 @@ vi.mock('../file-utils.js', () => {
       if (cur === null || prev === null) return true;
       return JSON.stringify(cur) !== JSON.stringify(prev);
     }),
+    fileExists: vi.fn((fp) => state[fp]?.exists ?? false),
+    getDefaultPrompt: vi.fn(() => DEFAULT_PROMPT_TEXT),
     __setState(s) { state = s; },
   };
 });
@@ -38,6 +41,7 @@ describe('FileWatch', () => {
   it('should read prompt content', () => {
     fileUtils.__setState({
       '/tmp/prompt.md': {
+        exists: true,
         prompt: { content: 'hello', mtime: 100 },
       },
     });
@@ -45,6 +49,8 @@ describe('FileWatch', () => {
       promptFilePath: '/tmp/prompt.md',
       watchFilePaths: [],
       log,
+      enableDefaultPrompt: false,
+      directory: '/tmp',
     });
     expect(fw.readPrompt()).toBe('hello');
   });
@@ -55,11 +61,17 @@ describe('FileWatch', () => {
         snapshot: { mtime: 100, size: 5 },
         prompt: { content: '', mtime: 0 },
       },
+      '/tmp/prompt.md': {
+        exists: false,
+        prompt: { content: '', mtime: 0 },
+      },
     });
     const fw = new FileWatch({
       promptFilePath: '/tmp/prompt.md',
       watchFilePaths: ['/tmp/task.md'],
       log,
+      enableDefaultPrompt: false,
+      directory: '/tmp',
     });
     expect(fw.hasFilesChanged()).toBe(false);
 
@@ -67,6 +79,10 @@ describe('FileWatch', () => {
     fileUtils.__setState({
       '/tmp/task.md': {
         snapshot: { mtime: 200, size: 10 },
+        prompt: { content: '', mtime: 0 },
+      },
+      '/tmp/prompt.md': {
+        exists: false,
         prompt: { content: '', mtime: 0 },
       },
     });
@@ -79,11 +95,17 @@ describe('FileWatch', () => {
         snapshot: { mtime: 100, size: 5 },
         prompt: { content: '', mtime: 0 },
       },
+      '/tmp/prompt.md': {
+        exists: false,
+        prompt: { content: '', mtime: 0 },
+      },
     });
     const fw = new FileWatch({
       promptFilePath: '/tmp/prompt.md',
       watchFilePaths: ['/tmp/task.md'],
       log,
+      enableDefaultPrompt: false,
+      directory: '/tmp',
     });
 
     // File changed externally
@@ -92,12 +114,80 @@ describe('FileWatch', () => {
         snapshot: { mtime: 200, size: 10 },
         prompt: { content: '', mtime: 0 },
       },
+      '/tmp/prompt.md': {
+        exists: false,
+        prompt: { content: '', mtime: 0 },
+      },
     });
     expect(fw.hasFilesChanged()).toBe(true);
 
     // Sync → snapshots match current state
     fw.syncToLatest();
     expect(fw.hasFilesChanged()).toBe(false);
+  });
+
+  it('should return empty string when prompt file does not exist and default prompt is disabled', () => {
+    fileUtils.__setState({
+      '/tmp/prompt.md': {
+        exists: false,
+      },
+    });
+    const fw = new FileWatch({
+      promptFilePath: '/tmp/prompt.md',
+      watchFilePaths: [],
+      log,
+      enableDefaultPrompt: false,
+    });
+    expect(fw.readPrompt()).toBe('');
+  });
+
+  it('should return default prompt when prompt file does not exist and default prompt is enabled', () => {
+    fileUtils.__setState({
+      '/tmp/prompt.md': {
+        exists: false,
+      },
+    });
+    const fw = new FileWatch({
+      promptFilePath: '/tmp/prompt.md',
+      watchFilePaths: [],
+      log,
+      enableDefaultPrompt: true,
+    });
+    const defaultPrompt = fw.readPrompt();
+    expect(defaultPrompt).toContain('helpful AI assistant');
+    expect(defaultPrompt.length).toBeGreaterThan(0);
+  });
+
+  it('should use file content when prompt file exists and default prompt is enabled', () => {
+    fileUtils.__setState({
+      '/tmp/prompt.md': {
+        exists: true,
+        prompt: { content: 'custom prompt', mtime: 100 },
+      },
+    });
+    const fw = new FileWatch({
+      promptFilePath: '/tmp/prompt.md',
+      watchFilePaths: [],
+      log,
+      enableDefaultPrompt: true,
+    });
+    expect(fw.readPrompt()).toBe('custom prompt');
+  });
+
+  it('should use file content when prompt file exists and default prompt is disabled', () => {
+    fileUtils.__setState({
+      '/tmp/prompt.md': {
+        exists: true,
+        prompt: { content: 'custom prompt', mtime: 100 },
+      },
+    });
+    const fw = new FileWatch({
+      promptFilePath: '/tmp/prompt.md',
+      watchFilePaths: [],
+      log,
+      enableDefaultPrompt: false,
+    });
+    expect(fw.readPrompt()).toBe('custom prompt');
   });
 });
 

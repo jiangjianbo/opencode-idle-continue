@@ -40,6 +40,9 @@ const distPkg = {
   name: rootPkg.name,
   version: rootPkg.version,
   type: rootPkg.type,
+  description: rootPkg.description,
+  author: rootPkg.author,
+  license: rootPkg.license,
   main: 'index.js',
   bin: {
     'opencode-idle-continue': './cli/index.js'
@@ -56,6 +59,9 @@ const distPkg = {
     "LICENSE"
   ],
   keywords: rootPkg.keywords,
+  repository: rootPkg.repository,
+  bugs: rootPkg.bugs,
+  homepage: rootPkg.homepage,
   dependencies: rootPkg.dependencies
 };
 

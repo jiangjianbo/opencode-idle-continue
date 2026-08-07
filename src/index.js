@@ -4,9 +4,9 @@ import { homedir } from 'node:os';
 import { OpenCodeTrueIdleDetector } from './opencode-true-idle-detector.js';
 import { SubagentTrigger } from './subagent-trigger.js';
 import { FileWatch, WaitState } from './wait-state.js';
-import { readFileSnapshot, fileChanged, loadPromptFile } from './file-utils.js';
+import { readFileSnapshot, fileChanged, loadPromptFile, fileExists, getDefaultPrompt } from './file-utils.js';
 
-export { readFileSnapshot, fileChanged, loadPromptFile };
+export { readFileSnapshot, fileChanged, loadPromptFile, fileExists, getDefaultPrompt };
 
 const DEFAULT_CONFIG = {
   prompt_file: 'idle-prompt.md',
@@ -14,12 +14,17 @@ const DEFAULT_CONFIG = {
   check_interval_minutes: 30,
   max_idle_cycles: 5,
   enabled: true,
+  log_enabled: false,
+  enable_default_prompt: false,
   subagent_enabled: false,
   subagent_agent_type: 'explore',
   subagent_delay_ms: 60_000,
 };
 
-function createLogger(logDir) {
+function createLogger(logDir, enabled) {
+  if (!enabled) {
+    return () => {};
+  }
   if (!fs.existsSync(logDir)) {
     fs.mkdirSync(logDir, { recursive: true });
   }
@@ -44,6 +49,18 @@ function findConfigFile(directory) {
   return null;
 }
 
+function findPromptFile(directory, promptFileName) {
+  const candidates = [
+    path.join(directory, promptFileName),
+    path.join(directory, '.opencode', promptFileName),
+    path.join(homedir(), '.config', 'opencode', promptFileName),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
 function loadConfig(directory) {
   const configPath = findConfigFile(directory);
   if (!configPath) return { ...DEFAULT_CONFIG };
@@ -58,19 +75,22 @@ function loadConfig(directory) {
 
   const server = async (input) => {
   const { directory, client } = input;
-  const logDir = path.join(directory, '.log');
-  const log = createLogger(logDir);
-
   const config = loadConfig(directory);
+
+  const logDir = path.join(directory, '.log');
+  const log = createLogger(logDir, config.log_enabled);
   log('INIT', `Config loaded: ${JSON.stringify(config)}`);
 
-  const resolvedPromptPath = path.resolve(directory, config.prompt_file);
+  const promptFilePath = findPromptFile(directory, config.prompt_file);
+  const resolvedPromptPath = promptFilePath ? promptFilePath : path.resolve(directory, config.prompt_file);
   const watchPaths = config.watch_files.map(f => path.resolve(directory, f));
 
   const fileWatch = new FileWatch({
     promptFilePath: resolvedPromptPath,
     watchFilePaths: watchPaths,
     log,
+    enableDefaultPrompt: config.enable_default_prompt,
+    directory,
   });
 
   let sessionStatus = 'idle';

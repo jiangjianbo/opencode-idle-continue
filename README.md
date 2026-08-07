@@ -59,6 +59,18 @@ All parameters are configured via `idle-continue.json`. Configuration file looku
 2. `.opencode/` directory
 3. `~/.config/opencode/` directory
 
+### Prompt File Lookup Order
+
+The prompt file (`idle-prompt.md` by default) is searched in the same order as the configuration file:
+
+1. `{directory}/{prompt_file}` (e.g., `idle-prompt.md`)
+2. `{directory}/.opencode/{prompt_file}` (e.g., `.opencode/idle-prompt.md`)
+3. `~/.config/opencode/{prompt_file}` (e.g., `~/.config/opencode/idle-prompt.md`)
+
+If no prompt file is found, the behavior depends on `enable_default_prompt`:
+- When `enable_default_prompt` is `false` (default), no message is sent
+- When `enable_default_prompt` is `true`, the built-in default prompt is used
+
 ### Configuration Fields
 
 | Field | Type | Default | Description |
@@ -68,6 +80,8 @@ All parameters are configured via `idle-continue.json`. Configuration file looku
 | `check_interval_minutes` | number | `30` | Check interval during wait state (minutes) |
 | `max_idle_cycles` | number | `5` | Max consecutive idle cycles before interval doubling |
 | `enabled` | boolean | `true` | Whether the plugin is enabled |
+| `log_enabled` | boolean | `false` | Whether to enable logging |
+| `enable_default_prompt` | boolean | `false` | Whether to use built-in default prompt when prompt file doesn't exist |
 | `subagent_enabled` | boolean | `false` | Whether to enable subagent mode |
 | `subagent_agent_type` | string | `"explore"` | Subagent type (only when subagent_enabled=true) |
 | `subagent_delay_ms` | number | `60_000` | Subagent trigger delay in milliseconds (only when subagent_enabled=true) |
@@ -89,7 +103,9 @@ All parameters are configured via `idle-continue.json`. Configuration file looku
 ### Mode 1: Traditional Mode (Default)
 
 1. **Idle Detection**: Monitors system idle status. Triggers when OpenCode is idle.
-2. **Send Prompt**: Reads prompt content from specified markdown file and sends to OpenCode for continued processing.
+2. **Send Prompt**: Reads prompt content from specified markdown file and sends to OpenCode for continued processing. If prompt file doesn't exist:
+   - When `enable_default_prompt` is `false` (default), no message is sent
+   - When `enable_default_prompt` is `true`, sends built-in default prompt
 3. **Prompt Hot Reload**: Checks if prompt file has been modified each time `prompt_file` is used. Uses cached content if unchanged, reloads and updates cache if modified, no need to restart plugin.
 4. **File Change Monitoring**: Maintains a list of files to monitor for content/timestamp changes.
 5. **Wait State**: If no changes in monitored files after sending prompt, enters wait state. Wait state requires:
@@ -111,6 +127,11 @@ All parameters are configured via `idle-continue.json`. Configuration file looku
 - `task.md` — Default monitored file, records current tasks
 - `wish-list.md` — Default monitored file, records pending wish list
 - `idle-continue.json` — Configuration file
+
+**Default Prompt**: When `enable_default_prompt` is `true` and the prompt file doesn't exist, uses the built-in default prompt:
+```
+You are a helpful AI assistant. Please continue working on the current task or project context. Review any existing files, understand the current state, and suggest next steps or continue with the implementation.
+```
 
 ## CLI Commands
 
