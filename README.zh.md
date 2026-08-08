@@ -1,3 +1,5 @@
+[English](README.md) | 中文版文档
+
 # opencode-idle-continue
 
 OpenCode插件，在空闲时自动发送提示词继续处理任务。
@@ -41,7 +43,7 @@ bash install-local.sh
 ```
 
 该脚本依次执行：
-1. `bun run build` — 构建 `dist/`
+1. `npm run build` — 构建 `dist/`
 2. `npm pack` — 从 `dist/` 创建 tarball `dist/opencode-idle-continue-1.0.0.tgz`
 3. 复制 `dist/` 内容到 `.opencode/plugins/idle-continue/`
 4. 在 `.opencode/` 下安装 `@opencode-ai/plugin` 依赖
@@ -57,6 +59,18 @@ bash install-local.sh
 2. `.opencode/` 目录
 3. `~/.config/opencode/` 目录
 
+### 提示词文件查找顺序
+
+提示词文件（默认 `idle-prompt.md`）的查找顺序与配置文件一致：
+
+1. `{directory}/{prompt_file}`（如 `idle-prompt.md`）
+2. `{directory}/.opencode/{prompt_file}`（如 `.opencode/idle-prompt.md`）
+3. `~/.config/opencode/{prompt_file}`（如 `~/.config/opencode/idle-prompt.md`）
+
+如果提示词文件不存在：
+- 当 `enable_default_prompt` 为 `false`（默认）时，不发送任何消息
+- 当 `enable_default_prompt` 为 `true` 时，使用内置默认提示词
+
 ### 配置字段
 
 | 字段 | 类型 | 默认值 | 说明 |
@@ -66,6 +80,8 @@ bash install-local.sh
 | `check_interval_minutes` | number | `30` | 等待状态下的检测间隔（分钟） |
 | `max_idle_cycles` | number | `5` | 连续空闲次数阈值，超限后间隔翻倍 |
 | `enabled` | boolean | `true` | 是否启用插件 |
+| `log_enabled` | boolean | `false` | 是否启用日志 |
+| `enable_default_prompt` | boolean | `false` | 提示词文件不存在时是否使用内置默认提示词 |
 | `subagent_enabled` | boolean | `false` | 是否启用子代理模式 |
 | `subagent_agent_type` | string | `"explore"` | 子代理类型（仅 subagent_enabled=true 时生效） |
 | `subagent_delay_ms` | number | `60_000` | 子代理触发延迟（毫秒，仅 subagent_enabled=true 时生效） |
@@ -87,7 +103,9 @@ bash install-local.sh
 ### 模式 1：传统模式（默认）
 
 1. **空闲检测**：监控系统空闲状态。当 opencode 处于空闲状态时触发后续逻辑。
-2. **发送提示词**：从指定的 markdown 文件中读取提示内容并发送给 opencode 继续处理。
+2. **发送提示词**：从指定的 markdown 文件中读取提示内容并发送给 opencode 继续处理。如果提示词文件不存在：
+   - 当 `enable_default_prompt` 为 `false`（默认）时，不发送任何消息
+   - 当 `enable_default_prompt` 为 `true` 时，发送内置默认提示词
 3. **提示词热重载**：每次使用 `prompt_file` 时检查文件是否已修改。未修改则使用缓存内容，已修改则重新读入并更新缓存，无需重启插件。
 4. **文件变更监控**：维护一个检测文件列表，监控这些文件的内容/时间戳是否变化。
 5. **等待状态**：如果发送提示词后检测文件列表中的文件没有变化，则进入等待状态。等待状态需要同时满足：
@@ -109,6 +127,11 @@ bash install-local.sh
 - `task.md` — 默认检测文件之一，记录当前任务
 - `wish-list.md` — 默认检测文件之一，记录待办愿望清单
 - `idle-continue.json` — 配置文件
+
+**默认提示词**：当 `enable_default_prompt` 为 `true` 且提示词文件不存在时，使用内置的默认提示词：
+```
+You are a helpful AI assistant. Please continue working on the current task or project context. Review any existing files, understand the current state, and suggest next steps or continue with the implementation.
+```
 
 ## CLI 命令
 
@@ -145,7 +168,7 @@ npm run build
 
 构建命令：
 ```
-mkdir -p dist && cp src/*.js dist/
+node tools/build.mjs
 ```
 
 输出：
@@ -206,3 +229,7 @@ opencode-idle-continue/
 ## 许可证
 
 MIT
+
+## 更新日志
+
+各版本的变更列表请参阅 [CHANGELOG.md](CHANGELOG.md)。

@@ -1,4 +1,4 @@
-[中文版文档](README.zh.md) | English
+English | [中文版文档](README.zh.md)
 
 # opencode-idle-continue
 
@@ -168,7 +168,7 @@ npm run build
 
 Build command:
 ```
-mkdir -p dist && cp src/*.js dist/
+node tools/build.mjs
 ```
 
 Output:

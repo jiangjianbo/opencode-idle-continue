@@ -3,5 +3,10 @@
   "watch_files": ["task.md", "wish-list.md"],
   "check_interval_minutes": 30,
   "max_idle_cycles": 5,
-  "enabled": true
+  "enabled": true,
+  "log_enabled": false,
+  "enable_default_prompt": false,
+  "subagent_enabled": false,
+  "subagent_agent_type": "explore",
+  "subagent_delay_ms": 60000
 }
