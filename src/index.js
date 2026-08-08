@@ -50,13 +50,13 @@ function findConfigFile(directory) {
 }
 
 function findPromptFile(directory, promptFileName) {
-  const candidates = [
-    path.join(directory, promptFileName),
-    path.join(directory, '.opencode', promptFileName),
-    path.join(homedir(), '.config', 'opencode', promptFileName),
-  ];
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return p;
+  let dir = path.resolve(directory);
+  const root = path.parse(dir).root;
+  while (dir !== root) {
+    for (const p of [path.join(dir, promptFileName), path.join(dir, '.opencode', promptFileName)]) {
+      if (fs.existsSync(p)) return p;
+    }
+    dir = path.dirname(dir);
   }
   return null;
 }

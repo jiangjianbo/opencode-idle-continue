@@ -61,11 +61,12 @@ bash install-local.sh
 
 ### 提示词文件查找顺序
 
-提示词文件（默认 `idle-prompt.md`）的查找顺序与配置文件一致：
+提示词文件（默认 `idle-prompt.md`）从当前目录开始逐级向上查找，每级目录检查两个位置：
 
-1. `{directory}/{prompt_file}`（如 `idle-prompt.md`）
-2. `{directory}/.opencode/{prompt_file}`（如 `.opencode/idle-prompt.md`）
-3. `~/.config/opencode/{prompt_file}`（如 `~/.config/opencode/idle-prompt.md`）
+1. `{dir}/{prompt_file}`（如 `idle-prompt.md`）
+2. `{dir}/.opencode/{prompt_file}`（如 `.opencode/idle-prompt.md`）
+
+然后 `{dir}` 向上逐级移动（父目录），每级同样检查上述两个位置。例如当前目录为 `/a/b/c/d`，查找顺序为 `/a/b/c/d`、`/a/b/c`、`/a/b`、`/a` 各自的 `{prompt_file}` 与 `.opencode/{prompt_file}`。始终不会查找系统根目录（如 `/`）。
 
 如果提示词文件不存在：
 - 当 `enable_default_prompt` 为 `false`（默认）时，不发送任何消息

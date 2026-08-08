@@ -9,10 +9,13 @@
 ### 模式 1：传统模式（默认）
 
 1. **空闲检测**：监控系统空闲状态。当 opencode 处于空闲状态时触发后续逻辑。
-2. **发送提示词**：按照配置文件的查找次序寻找提示词文档，读取提示内容并发送给 opencode 继续处理。提示词文件查找顺序：
-   - `{directory}/{prompt_file}`（如 `idle-prompt.md`）
-   - `{directory}/.opencode/{prompt_file}`（如 `.opencode/idle-prompt.md`）
-   - `~/.config/opencode/{prompt_file}`（如 `~/.config/opencode/idle-prompt.md`）
+2. **发送提示词**：寻找提示词文档，读取提示内容并发送给 opencode 继续处理。提示词文件查找顺序（从当前目录开始逐级向上，每级目录检查两个位置）：
+   - `{dir}/{prompt_file}`（如 `idle-prompt.md`）
+   - `{dir}/.opencode/{prompt_file}`（如 `.opencode/idle-prompt.md`）
+   
+   然后 `{dir}` 向上逐级移动（父目录），每级同样检查上述两个位置。例如当前目录为 `/a/b/c/d`，查找顺序为：
+   `/a/b/c/d`、`/a/b/c`、`/a/b`、`/a` 各自的 `{prompt_file}` 与 `.opencode/{prompt_file}`。
+   始终不会查找系统根目录（如 `/`）。
    
    如果提示词文件不存在：
    - 当 `enable_default_prompt` 为 `false`（默认）时，不发送任何消息

@@ -61,11 +61,12 @@ All parameters are configured via `idle-continue.json`. Configuration file looku
 
 ### Prompt File Lookup Order
 
-The prompt file (`idle-prompt.md` by default) is searched in the same order as the configuration file:
+The prompt file (`idle-prompt.md` by default) is searched from the current directory upward, checking two locations per level:
 
-1. `{directory}/{prompt_file}` (e.g., `idle-prompt.md`)
-2. `{directory}/.opencode/{prompt_file}` (e.g., `.opencode/idle-prompt.md`)
-3. `~/.config/opencode/{prompt_file}` (e.g., `~/.config/opencode/idle-prompt.md`)
+1. `{dir}/{prompt_file}` (e.g., `idle-prompt.md`)
+2. `{dir}/.opencode/{prompt_file}` (e.g., `.opencode/idle-prompt.md`)
+
+Then `{dir}` moves up one level (parent directory) and checks the same two locations again. For example, if the current directory is `/a/b/c/d`, the search order is `/a/b/c/d`, `/a/b/c`, `/a/b`, `/a`, each checking both `{prompt_file}` and `.opencode/{prompt_file}`. The system root directory (e.g., `/`) is never searched.
 
 If no prompt file is found, the behavior depends on `enable_default_prompt`:
 - When `enable_default_prompt` is `false` (default), no message is sent
