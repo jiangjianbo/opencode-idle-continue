@@ -57,6 +57,7 @@
 | `subagent_enabled` | boolean | `false` | 是否启用子代理模式 |
 | `subagent_agent_type` | string | `"explore"` | 子代理类型（仅 subagent_enabled=true 时生效） |
 | `subagent_delay_ms` | number | `60_000` | 子代理触发延迟（毫秒，仅 subagent_enabled=true 时生效） |
+| `debounce_delay_ms` | number | `5000` | idle 状态去抖确认延迟（毫秒），默认 5 秒 |
 
 ### 示例 `idle-continue.json`
 
@@ -283,7 +284,7 @@ const trigger = new SubagentTrigger({ client, detector, log, directory });
 ```
 session.status({type:'idle'})
   → OpenCodeTrueIdleDetector
-    → 200ms 去抖
+    → 5s 去抖
     → TRUE_IDLE
     → onIdle(sessionID)
       → WaitState.onIdle()
@@ -363,7 +364,7 @@ WaitState.enter()
 ### OpenCodeTrueIdleDetector 类规范 (`src/opencode-true-idle-detector.js`)
 
 - 使用 JavaScript 私有字段（`#`）封装状态，防止外部篡改
-- `scheduleCheck` 用 `setTimeout` 实现 200ms 去抖
+- `scheduleCheck` 用 `setTimeout` 实现 5s 去抖
 - `onIdle` 回调在去抖确认后调用，但回调本身可以是 `async`
 - `onIdleExit` 回调在状态从 idle 切换到 busy 时同步调用
 - `onUserInterrupt` 回调在检测到 `MessageAbortedError` 时调用
@@ -425,7 +426,7 @@ WaitState.enter()
 
 ### 去抖机制
 
-- `scheduleCheck(sessionID, delay=200)` 用 `setTimeout` 实现
+- `scheduleCheck(sessionID, delay)` 用 `setTimeout` 实现，默认延迟为 `debounce_delay_ms`（默认 5000ms）
 - 已有 pending 则 `clearTimeout` 重置
 - 到期后验证 `status === 'idle' && !waitingPermission && !waitingQuestion`
 - 若中途变为 busy，立即取消
@@ -475,7 +476,7 @@ onIdleExit(sessionID)  ← 同步调用
 
 | # | 用例 | 输入 | 预期行为 |
 |---|------|------|----------|
-| 1 | **基本空闲检测** | `session.status({type:'idle'})` | 200ms 去抖后 `onIdle` 被调用 1 次 |
+| 1 | **基本空闲检测** | `session.status({type:'idle'})` | 5s 去抖后 `onIdle` 被调用 1 次 |
 | 2 | **busy 取消去抖** | idle → 50ms 后 busy | 去抖被取消，`onIdle` 未被调用 |
 | 3 | **idle → busy → idle 重置去抖** | idle → 50ms → busy → idle | 第一个去抖取消，第二个重新调度，仅第二个到期时调用 onIdle |
 | 4 | **permission.asked 阻止空闲** | idle → permission.asked | 去抖到期条件不满足，`onIdle` 未被调用 |
@@ -484,7 +485,7 @@ onIdleExit(sessionID)  ← 同步调用
 | 7 | **question.replied2 恢复空闲** | idle → asked → replied2 | replied2 重新调度，到期后 `onIdle` 被调用 |
 | 8 | **question.rejected2 恢复空闲** | idle → asked → rejected2 | 同上 |
 | 9 | **session.idle 更新 sessionID** | 连续两次不同 sessionID | `activeSessionID` 返回最后一次 |
-| 10 | **dispose 清理定时器** | idle → 未到 200ms → dispose | pending 定时器清除，`onIdle` 永不被调用 |
+| 10 | **dispose 清理定时器** | idle → 未到 5s → dispose | pending 定时器清除，`onIdle` 永不被调用 |
 | 11 | **idle→busy 触发 onIdleExit** | idle → 立即 busy | `onIdleExit` 被同步调用 1 次，参数 sessionID 正确 |
 | 12 | **onIdleExit 不触发于 idle→idle** | 连续两次 idle | `onIdleExit` 未被调用 |
 | 13 | **MessageAbortedError 触发 onUserInterrupt** | `handleChatMessage` 含 `error.name='MessageAbortedError'` | `onUserInterrupt` 被调用 1 次 |

@@ -86,6 +86,7 @@ bash install-local.sh
 | `subagent_enabled` | boolean | `false` | 是否启用子代理模式 |
 | `subagent_agent_type` | string | `"explore"` | 子代理类型（仅 subagent_enabled=true 时生效） |
 | `subagent_delay_ms` | number | `60_000` | 子代理触发延迟（毫秒，仅 subagent_enabled=true 时生效） |
+| `debounce_delay_ms` | number | `5000` | idle 状态去抖确认延迟（毫秒），默认 5 秒 |
 
 ### 示例 `idle-continue.json`
 

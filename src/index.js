@@ -19,6 +19,7 @@ const DEFAULT_CONFIG = {
   subagent_enabled: false,
   subagent_agent_type: 'explore',
   subagent_delay_ms: 60_000,
+  debounce_delay_ms: 5000,
 };
 
 function createLogger(logDir, enabled) {
@@ -109,6 +110,7 @@ function loadConfig(directory) {
 
   const detector = new OpenCodeTrueIdleDetector({
     log,
+    baseDelay: config.debounce_delay_ms,
     onIdle: async (sessionID) => {
       if (!config.enabled) {
         log('SKIP', 'Plugin disabled');
@@ -218,6 +220,7 @@ function loadConfig(directory) {
       subagent_enabled: config.subagent_enabled,
       subagent_agent_type: config.subagent_agent_type,
       subagent_delay_ms: config.subagent_delay_ms,
+      debounce_delay_ms: config.debounce_delay_ms,
     },
   }));
 

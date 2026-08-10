@@ -22,7 +22,8 @@ describe('OpenCodeTrueIdleDetector - skipNextUserMessage timing', () => {
       onIdle,
       onIdleExit,
       onUserInterrupt,
-      onUserInput
+      onUserInput,
+      baseDelay: 200
     });
   });
 
