@@ -41,6 +41,7 @@ function findConfigFile(directory) {
   const candidates = [
     path.join(directory, 'idle-continue.json'),
     path.join(directory, '.opencode', 'idle-continue.json'),
+    path.join(directory, '.ai', 'idle-continue.json'),
     path.join(homedir(), '.config', 'opencode', 'idle-continue.json'),
   ];
   for (const p of candidates) {
@@ -53,7 +54,7 @@ function findPromptFile(directory, promptFileName) {
   let dir = path.resolve(directory);
   const root = path.parse(dir).root;
   while (dir !== root) {
-    for (const p of [path.join(dir, promptFileName), path.join(dir, '.opencode', promptFileName)]) {
+    for (const p of [path.join(dir, promptFileName), path.join(dir, '.opencode', promptFileName), path.join(dir, '.ai', promptFileName)]) {
       if (fs.existsSync(p)) return p;
     }
     dir = path.dirname(dir);

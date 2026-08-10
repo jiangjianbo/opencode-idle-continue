@@ -1,6 +1,6 @@
 {
   "name": "opencode-idle-continue",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "type": "module",
   "description": "OpenCode plugin that automatically sends prompts to continue processing when idle. Supports traditional mode and subagent mode with file monitoring and hot reload.",
   "author": "jiangjianbo",
