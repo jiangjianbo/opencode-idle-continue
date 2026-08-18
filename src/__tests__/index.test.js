@@ -27,6 +27,7 @@ async function createTestEnv(options = {}) {
     check_interval_minutes: 30,
     max_idle_cycles: 5,
     enabled: true,
+    debounce_delay_ms: 200,
     ...(options.config || {}),
   };
 

@@ -19,6 +19,7 @@ const DEFAULT_CONFIG = {
   subagent_enabled: false,
   subagent_agent_type: 'explore',
   subagent_delay_ms: 60_000,
+  debounce_delay_ms: 5000,
 };
 
 function createLogger(logDir, enabled) {
@@ -41,6 +42,7 @@ function findConfigFile(directory) {
   const candidates = [
     path.join(directory, 'idle-continue.json'),
     path.join(directory, '.opencode', 'idle-continue.json'),
+    path.join(directory, '.ai', 'idle-continue.json'),
     path.join(homedir(), '.config', 'opencode', 'idle-continue.json'),
   ];
   for (const p of candidates) {
@@ -53,7 +55,7 @@ function findPromptFile(directory, promptFileName) {
   let dir = path.resolve(directory);
   const root = path.parse(dir).root;
   while (dir !== root) {
-    for (const p of [path.join(dir, promptFileName), path.join(dir, '.opencode', promptFileName)]) {
+    for (const p of [path.join(dir, promptFileName), path.join(dir, '.opencode', promptFileName), path.join(dir, '.ai', promptFileName)]) {
       if (fs.existsSync(p)) return p;
     }
     dir = path.dirname(dir);
@@ -108,6 +110,7 @@ function loadConfig(directory) {
 
   const detector = new OpenCodeTrueIdleDetector({
     log,
+    baseDelay: config.debounce_delay_ms,
     onIdle: async (sessionID) => {
       if (!config.enabled) {
         log('SKIP', 'Plugin disabled');
@@ -217,6 +220,7 @@ function loadConfig(directory) {
       subagent_enabled: config.subagent_enabled,
       subagent_agent_type: config.subagent_agent_type,
       subagent_delay_ms: config.subagent_delay_ms,
+      debounce_delay_ms: config.debounce_delay_ms,
     },
   }));
 

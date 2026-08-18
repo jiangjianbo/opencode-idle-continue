@@ -9,6 +9,7 @@ function createDetector(opts = {}) {
   const onUserInput = opts.onUserInput ?? vi.fn();
   const detector = new OpenCodeTrueIdleDetector({
     log, onIdle, onIdleExit, onUserInterrupt, onUserInput,
+    baseDelay: 200,
   });
   return { detector, log, onIdle, onIdleExit, onUserInterrupt, onUserInput };
 }

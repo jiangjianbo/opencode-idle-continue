@@ -22,7 +22,8 @@ describe('OpenCodeTrueIdleDetector - skipNextIdleExit functionality', () => {
       onIdle,
       onIdleExit,
       onUserInterrupt,
-      onUserInput
+      onUserInput,
+      baseDelay: 200
     });
   });
 

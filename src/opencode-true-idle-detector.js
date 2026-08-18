@@ -1,7 +1,7 @@
 export class OpenCodeTrueIdleDetector {
   #log;
-  #BASE_DELAY = 200;
-  #currentDelay = this.#BASE_DELAY;
+  #BASE_DELAY;
+  #currentDelay;
   #status = 'idle';
   #waitingPermission = false;
   #waitingQuestion = false;
@@ -19,8 +19,10 @@ export class OpenCodeTrueIdleDetector {
   #skipNextUserMessageTimer = null;
   #skipNextIdleExitTimer = null;
 
-  constructor({ log, onIdle, onIdleExit, onUserInterrupt, onUserInput }) {
+  constructor({ log, onIdle, onIdleExit, onUserInterrupt, onUserInput, baseDelay = 5000 }) {
     this.#log = log;
+    this.#BASE_DELAY = baseDelay;
+    this.#currentDelay = baseDelay;
     this.#onIdle = onIdle;
     this.#onIdleExit = onIdleExit;
     this.#onUserInterrupt = onUserInterrupt;

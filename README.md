@@ -86,6 +86,7 @@ If no prompt file is found, the behavior depends on `enable_default_prompt`:
 | `subagent_enabled` | boolean | `false` | Whether to enable subagent mode |
 | `subagent_agent_type` | string | `"explore"` | Subagent type (only when subagent_enabled=true) |
 | `subagent_delay_ms` | number | `60_000` | Subagent trigger delay in milliseconds (only when subagent_enabled=true) |
+| `debounce_delay_ms` | number | `5000` | Idle debounce confirmation delay in milliseconds (default 5s) |
 
 ### Example `idle-continue.json`
 
