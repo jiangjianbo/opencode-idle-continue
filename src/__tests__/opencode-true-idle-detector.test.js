@@ -7,11 +7,16 @@ function createDetector(opts = {}) {
   const onIdleExit = opts.onIdleExit ?? vi.fn();
   const onUserInterrupt = opts.onUserInterrupt ?? vi.fn();
   const onUserInput = opts.onUserInput ?? vi.fn();
+  const onUserInputActivity = opts.onUserInputActivity ?? vi.fn();
+  const onAiStuck = opts.onAiStuck ?? vi.fn();
   const detector = new OpenCodeTrueIdleDetector({
-    log, onIdle, onIdleExit, onUserInterrupt, onUserInput,
+    log, onIdle, onIdleExit, onUserInterrupt, onUserInput, onUserInputActivity, onAiStuck,
     baseDelay: 200,
+    stuckThresholdMinutes: opts.stuckThresholdMinutes,
+    stuckAction: opts.stuckAction ?? 'ignore',
+    stuckRetryPrompt: opts.stuckRetryPrompt ?? 'continue',
   });
-  return { detector, log, onIdle, onIdleExit, onUserInterrupt, onUserInput };
+  return { detector, log, onIdle, onIdleExit, onUserInterrupt, onUserInput, onUserInputActivity, onAiStuck };
 }
 
 async function flush() {
@@ -100,12 +105,12 @@ describe('OpenCodeTrueIdleDetector', () => {
   });
 
   describe('interrupt handling', () => {
-    // 13. MessageAbortedError via handleChatMessage
-    it('should detect interrupt via handleChatMessage with MessageAbortedError', async () => {
+    // 13. AbortedError via handleChatMessage (fixed from MessageAbortedError)
+    it('should detect interrupt via handleChatMessage with AbortedError', async () => {
       det.detector.handleChatMessage(
         { sessionID: 's1', messageID: 'm1' },
         {
-          message: { role: 'assistant', error: { name: 'MessageAbortedError', data: { message: 'esc' } } },
+          message: { role: 'assistant', error: { name: 'AbortedError', data: { message: 'esc' } } },
           parts: [],
         },
       );
@@ -146,20 +151,20 @@ describe('OpenCodeTrueIdleDetector', () => {
       expect(det.onIdle).not.toHaveBeenCalled();
     });
 
-    // session.error with MessageAbortedError (new)
-    it('session.error with MessageAbortedError should set #interrupted', async () => {
+    // session.error with AbortedError (fixed from MessageAbortedError)
+    it('session.error with AbortedError should set #interrupted', async () => {
       det.detector.handleEvent({
         event: {
           type: 'session.error',
           properties: {
             sessionID: 's1',
-            error: { name: 'MessageAbortedError', data: { message: 'cancelled' } },
+            error: { name: 'AbortedError', data: { message: 'cancelled' } },
           },
         },
       });
 
       expect(det.log).toHaveBeenCalledWith('INTERRUPT',
-        expect.stringContaining('session.error with MessageAbortedError'));
+        expect.stringContaining('session.error with AbortedError'));
       expect(det.detector.interrupted).toBe(true);
       expect(det.onUserInterrupt).toHaveBeenCalledWith('s1');
     });
@@ -346,13 +351,13 @@ describe('OpenCodeTrueIdleDetector', () => {
       expect(det.onIdleExit).not.toHaveBeenCalled();
     });
 
-    it('should NOT fire onIdleExit via session.error with MessageAbortedError', async () => {
+    it('should NOT fire onIdleExit via session.error with AbortedError', async () => {
       det.detector.handleEvent({
         event: {
           type: 'session.error',
           properties: {
             sessionID: 's1',
-            error: { name: 'MessageAbortedError', data: { message: 'cancelled' } },
+            error: { name: 'AbortedError', data: { message: 'cancelled' } },
           },
         },
       });
@@ -445,8 +450,8 @@ describe('OpenCodeTrueIdleDetector', () => {
       expect(det.log).toHaveBeenCalledWith('SKIP', expect.stringContaining('not true idle'));
     });
 
-    // 7. question.replied2 restores
-    it('should recheck when question.replied2 resolves', async () => {
+    // 7. question.replied restores (fixed from question.replied2)
+    it('should recheck when question.replied resolves', async () => {
       det.detector.handleEvent({
         event: { type: 'session.status', properties: { sessionID: 's1', status: { type: 'idle' } } },
       });
@@ -454,7 +459,7 @@ describe('OpenCodeTrueIdleDetector', () => {
         event: { type: 'question.asked', properties: { sessionID: 's1' } },
       });
       det.detector.handleEvent({
-        event: { type: 'question.replied2', properties: { sessionID: 's1' } },
+        event: { type: 'question.replied', properties: { sessionID: 's1' } },
       });
 
       vi.advanceTimersByTime(200);
@@ -463,8 +468,8 @@ describe('OpenCodeTrueIdleDetector', () => {
       expect(det.onIdle).toHaveBeenCalledWith('s1');
     });
 
-    // 8. question.rejected2 restores
-    it('should recheck when question.rejected2 resolves', async () => {
+    // 8. question.rejected restores (fixed from question.rejected2)
+    it('should recheck when question.rejected resolves', async () => {
       det.detector.handleEvent({
         event: { type: 'session.status', properties: { sessionID: 's1', status: { type: 'idle' } } },
       });
@@ -472,7 +477,7 @@ describe('OpenCodeTrueIdleDetector', () => {
         event: { type: 'question.asked', properties: { sessionID: 's1' } },
       });
       det.detector.handleEvent({
-        event: { type: 'question.rejected2', properties: { sessionID: 's1' } },
+        event: { type: 'question.rejected', properties: { sessionID: 's1' } },
       });
 
       vi.advanceTimersByTime(200);
@@ -495,6 +500,266 @@ describe('OpenCodeTrueIdleDetector', () => {
       const trueIdleCalls = det.log.mock.calls.filter(c => c[0] === 'TRUE_IDLE');
       expect(trueIdleCalls.length).toBe(3);
       expect(det.onIdle).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  describe('user input activity detection', () => {
+    it('should detect user input activity via tui.prompt.append', () => {
+      det.detector.handleMessageEvent({
+        event: { type: 'tui.prompt.append', properties: { sessionID: 's1' } },
+      });
+
+      expect(det.log).toHaveBeenCalledWith('USER_INPUT_ACTIVITY', expect.stringContaining('user input detected'));
+      expect(det.onUserInputActivity).toHaveBeenCalled();
+    });
+
+    it('should call onUserInputActivity callback when tui.prompt.append occurs', () => {
+      det.detector.handleMessageEvent({
+        event: { type: 'tui.prompt.append', properties: { sessionID: 's1' } },
+      });
+
+      expect(det.onUserInputActivity).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('AI stuck detection', () => {
+    it('should start stuck check when entering busy state', () => {
+      det.detector.handleEvent({
+        event: { type: 'session.status', properties: { sessionID: 's1', status: { type: 'busy' } } },
+      });
+
+      expect(det.log).toHaveBeenCalledWith('STATUS', 'session=s1 idle -> busy');
+      expect(det.onIdleExit).toHaveBeenCalledWith('s1');
+    });
+
+    it('should cancel stuck check when leaving busy state', () => {
+      det.detector.handleEvent({
+        event: { type: 'session.status', properties: { sessionID: 's1', status: { type: 'busy' } } },
+      });
+      vi.clearAllMocks();
+
+      det.detector.handleEvent({
+        event: { type: 'session.status', properties: { sessionID: 's1', status: { type: 'idle' } } },
+      });
+
+      expect(det.log).toHaveBeenCalledWith('STUCK_CHECK', 'session=s1 stuck check cancelled (idle)');
+    });
+
+    it('should record activity on message events during busy state', () => {
+      det.detector.handleEvent({
+        event: { type: 'session.status', properties: { sessionID: 's1', status: { type: 'busy' } } },
+      });
+
+      det.detector.handleMessageEvent({
+        event: { type: 'message.updated', properties: { sessionID: 's1' } },
+      });
+      expect(det.log).toHaveBeenCalledWith('HEARTBEAT', expect.stringContaining('activity detected'));
+
+      det.detector.handleMessageEvent({
+        event: { type: 'message.part.updated', properties: { sessionID: 's1' } },
+      });
+      expect(det.log).toHaveBeenCalledWith('HEARTBEAT', expect.stringContaining('activity detected'));
+
+      det.detector.handleMessageEvent({
+        event: { type: 'message.part.delta', properties: { sessionID: 's1' } },
+      });
+      expect(det.log).toHaveBeenCalledWith('HEARTBEAT', expect.stringContaining('activity detected'));
+    });
+
+    it('should NOT record activity during idle state', () => {
+      det.detector.handleEvent({
+        event: { type: 'session.status', properties: { sessionID: 's1', status: { type: 'idle' } } },
+      });
+
+      det.detector.handleMessageEvent({
+        event: { type: 'message.updated', properties: { sessionID: 's1' } },
+      });
+      expect(det.log).not.toHaveBeenCalledWith('HEARTBEAT', expect.stringContaining('activity detected'));
+    });
+
+    it('should trigger onAiStuck when no activity for threshold duration', () => {
+      const stuckDetector = createDetector({
+        stuckThresholdMinutes: 1,
+        onAiStuck: vi.fn(),
+      });
+
+      stuckDetector.detector.handleEvent({
+        event: { type: 'session.status', properties: { sessionID: 's1', status: { type: 'busy' } } },
+      });
+
+      vi.advanceTimersByTime(1.5 * 60 * 1000);
+
+      expect(stuckDetector.log).toHaveBeenCalledWith('AI_STUCK', expect.stringContaining('no activity'));
+      expect(stuckDetector.onAiStuck).toHaveBeenCalledWith('s1', { action: 'ignore', retryPrompt: 'continue' });
+
+      stuckDetector.detector.dispose();
+    });
+
+    it('should NOT trigger onAiStuck when activity occurs within threshold', () => {
+      const stuckDetector = createDetector({
+        stuckThresholdMinutes: 2,
+        onAiStuck: vi.fn(),
+      });
+
+      stuckDetector.detector.handleEvent({
+        event: { type: 'session.status', properties: { sessionID: 's1', status: { type: 'busy' } } },
+      });
+
+      vi.advanceTimersByTime(30 * 1000);
+
+      stuckDetector.detector.handleMessageEvent({
+        event: { type: 'message.part.delta', properties: { sessionID: 's1' } },
+      });
+
+      vi.advanceTimersByTime(30 * 1000);
+
+      expect(stuckDetector.onAiStuck).not.toHaveBeenCalled();
+
+      stuckDetector.detector.dispose();
+    });
+
+    it('should use configured stuck_threshold_minutes parameter', () => {
+      const customThresholdDetector = createDetector({
+        stuckThresholdMinutes: 0.5,
+        onAiStuck: vi.fn(),
+      });
+
+      customThresholdDetector.detector.handleEvent({
+        event: { type: 'session.status', properties: { sessionID: 's1', status: { type: 'busy' } } },
+      });
+
+      vi.advanceTimersByTime(1 * 60 * 1000);
+
+      expect(customThresholdDetector.onAiStuck).toHaveBeenCalledWith('s1', { action: 'ignore', retryPrompt: 'continue' });
+
+      customThresholdDetector.detector.dispose();
+    });
+  });
+
+  describe('user input state detection', () => {
+    it('should set hasUncommittedInput to true when tui.prompt.content has content', () => {
+      det.detector.handleMessageEvent({
+        event: { type: 'tui.prompt.content', properties: { content: 'test input' } },
+      });
+
+      expect(det.detector.hasUncommittedInput).toBe(true);
+      expect(det.log).toHaveBeenCalledWith('INPUT_STATE', 'Uncommitted input state: true');
+    });
+
+    it('should set hasUncommittedInput to false when tui.prompt.content is empty', () => {
+      det.detector.handleMessageEvent({
+        event: { type: 'tui.prompt.content', properties: { content: '' } },
+      });
+
+      expect(det.detector.hasUncommittedInput).toBe(false);
+      expect(det.log).toHaveBeenCalledWith('INPUT_STATE', 'Uncommitted input state: false');
+    });
+
+    it('should skip idle detection when hasUncommittedInput is true', async () => {
+      det.detector.setHasUncommittedInput(true);
+
+      det.detector.handleEvent({
+        event: { type: 'session.status', properties: { sessionID: 's1', status: { type: 'idle' } } },
+      });
+
+      vi.advanceTimersByTime(200);
+      await flush();
+
+      expect(det.log).toHaveBeenCalledWith('SKIP', expect.stringContaining('user has uncommitted input'));
+      expect(det.onIdle).not.toHaveBeenCalled();
+    });
+
+    it('should allow setHasUncommittedInput to change input state', () => {
+      det.detector.setHasUncommittedInput(true);
+      expect(det.detector.hasUncommittedInput).toBe(true);
+
+      det.detector.setHasUncommittedInput(false);
+      expect(det.detector.hasUncommittedInput).toBe(false);
+    });
+  });
+
+  describe('page scroll detection', () => {
+    it('should set isScrolling to true on ui.scroll event', () => {
+      det.detector.handleMessageEvent({
+        event: { type: 'ui.scroll', properties: { sessionID: 's1' } },
+      });
+
+      expect(det.detector.isScrolling).toBe(true);
+      expect(det.log).toHaveBeenCalledWith('SCROLL_STATE', 'Page scrolling state: true');
+    });
+
+    it('should set isScrolling to false on ui.scroll.end event', () => {
+      det.detector.handleMessageEvent({
+        event: { type: 'ui.scroll', properties: { sessionID: 's1' } },
+      });
+      expect(det.detector.isScrolling).toBe(true);
+
+      det.detector.handleMessageEvent({
+        event: { type: 'ui.scroll.end', properties: { sessionID: 's1' } },
+      });
+
+      expect(det.detector.isScrolling).toBe(false);
+      expect(det.log).toHaveBeenCalledWith('SCROLL_STATE', 'Page scrolling state: false');
+    });
+
+    it('should skip idle detection when isScrolling is true', async () => {
+      det.detector.setIsScrolling(true);
+
+      det.detector.handleEvent({
+        event: { type: 'session.status', properties: { sessionID: 's1', status: { type: 'idle' } } },
+      });
+
+      vi.advanceTimersByTime(200);
+      await flush();
+
+      expect(det.log).toHaveBeenCalledWith('SKIP', expect.stringContaining('user is scrolling page'));
+      expect(det.onIdle).not.toHaveBeenCalled();
+    });
+
+    it('should allow setIsScrolling to change scroll state', () => {
+      det.detector.setIsScrolling(true);
+      expect(det.detector.isScrolling).toBe(true);
+
+      det.detector.setIsScrolling(false);
+      expect(det.detector.isScrolling).toBe(false);
+    });
+  });
+
+  describe('AI stuck action configuration', () => {
+    it('should provide stuck action and retry prompt in onAiStuck callback', () => {
+      const configDetector = createDetector({
+        stuckThresholdMinutes: 0.5,
+        stuckAction: 'abort_and_retry',
+        stuckRetryPrompt: 'please continue',
+        onAiStuck: vi.fn(),
+      });
+
+      configDetector.detector.handleEvent({
+        event: { type: 'session.status', properties: { sessionID: 's1', status: { type: 'busy' } } },
+      });
+
+      vi.advanceTimersByTime(1 * 60 * 1000);
+
+      expect(configDetector.onAiStuck).toHaveBeenCalledWith('s1', { action: 'abort_and_retry', retryPrompt: 'please continue' });
+
+      configDetector.detector.dispose();
+    });
+
+    it('should use default action and prompt when not specified', () => {
+      const defaultDetector = createDetector({
+        stuckThresholdMinutes: 0.5,
+        onAiStuck: vi.fn(),
+      });
+
+      defaultDetector.detector.handleEvent({
+        event: { type: 'session.status', properties: { sessionID: 's1', status: { type: 'busy' } } },
+      });
+
+      vi.advanceTimersByTime(1 * 60 * 1000);
+
+      expect(defaultDetector.onAiStuck).toHaveBeenCalledWith('s1', { action: 'ignore', retryPrompt: 'continue' });
+
+      defaultDetector.detector.dispose();
     });
   });
 });

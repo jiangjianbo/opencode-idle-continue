@@ -1,3 +1,12 @@
+/**
+ * OpenCode Idle Continue 插件
+ * 
+ * 当 OpenCode 处于空闲状态时自动发送提示词，支持文件监控和周期性重发。
+ * 支持 AI 卡死检测和自动恢复，以及用户输入和滚动状态的检测。
+ * 
+ * @module idle-continue
+ */
+
 import fs from 'node:fs';
 import path from 'node:path';
 import { homedir } from 'node:os';
@@ -8,6 +17,9 @@ import { readFileSnapshot, fileChanged, loadPromptFile, fileExists, getDefaultPr
 
 export { readFileSnapshot, fileChanged, loadPromptFile, fileExists, getDefaultPrompt };
 
+/**
+ * 默认配置
+ */
 const DEFAULT_CONFIG = {
   prompt_file: 'idle-prompt.md',
   watch_files: ['task.md', 'wish-list.md'],
@@ -20,8 +32,17 @@ const DEFAULT_CONFIG = {
   subagent_agent_type: 'explore',
   subagent_delay_ms: 60_000,
   debounce_delay_ms: 5000,
+  stuck_threshold_minutes: 20,
+  ai_stuck_action: 'ignore',
+  ai_stuck_retry_prompt: 'continue',
 };
 
+/**
+ * 创建日志记录器
+ * @param {string} logDir - 日志目录
+ * @param {boolean} enabled - 是否启用日志
+ * @returns {Function} 日志记录函数
+ */
 function createLogger(logDir, enabled) {
   if (!enabled) {
     return () => {};
@@ -38,6 +59,11 @@ function createLogger(logDir, enabled) {
   };
 }
 
+/**
+ * 查找配置文件
+ * @param {string} directory - 项目目录
+ * @returns {string|null} 配置文件路径或 null
+ */
 function findConfigFile(directory) {
   const candidates = [
     path.join(directory, 'idle-continue.json'),
@@ -51,6 +77,12 @@ function findConfigFile(directory) {
   return null;
 }
 
+/**
+ * 查找提示词文件
+ * @param {string} directory - 项目目录
+ * @param {string} promptFileName - 提示词文件名
+ * @returns {string|null} 提示词文件路径或 null
+ */
 function findPromptFile(directory, promptFileName) {
   let dir = path.resolve(directory);
   const root = path.parse(dir).root;
@@ -63,6 +95,11 @@ function findPromptFile(directory, promptFileName) {
   return null;
 }
 
+/**
+ * 加载配置
+ * @param {string} directory - 项目目录
+ * @returns {Object} 配置对象
+ */
 function loadConfig(directory) {
   const configPath = findConfigFile(directory);
   if (!configPath) return { ...DEFAULT_CONFIG };
@@ -75,7 +112,14 @@ function loadConfig(directory) {
   }
 }
 
-  const server = async (input) => {
+/**
+ * 插件服务器主函数
+ * @param {Object} input - 输入参数
+ * @param {string} input.directory - 项目目录
+ * @param {Object} input.client - OpenCode 客户端对象
+ * @returns {Object} 插件钩子对象
+ */
+const server = async (input) => {
   const { directory, client } = input;
   const config = loadConfig(directory);
 
@@ -100,6 +144,10 @@ function loadConfig(directory) {
   let mainSessionID = null;
   let pendingTimer = null;
 
+  /**
+   * 取消待处理定时器
+   * @param {string} sessionID - 会话 ID
+   */
   function cancelPendingTimer(sessionID) {
     if (pendingTimer) {
       clearTimeout(pendingTimer);
@@ -111,6 +159,9 @@ function loadConfig(directory) {
   const detector = new OpenCodeTrueIdleDetector({
     log,
     baseDelay: config.debounce_delay_ms,
+    stuckThresholdMinutes: config.stuck_threshold_minutes,
+    stuckAction: config.ai_stuck_action,
+    stuckRetryPrompt: config.ai_stuck_retry_prompt,
     onIdle: async (sessionID) => {
       if (!config.enabled) {
         log('SKIP', 'Plugin disabled');
@@ -158,12 +209,64 @@ function loadConfig(directory) {
       cancelPendingTimer(sessionID);
       waitState.onUserInput(sessionID);
     },
+    onUserInputActivity: () => {
+      log('USER_INPUT_ACTIVITY', 'User typing detected');
+    },
+    onAiStuck: async (sessionID, opts) => {
+      if (!config.enabled) return;
+      const action = opts?.action || config.ai_stuck_action;
+      const retryPrompt = opts?.retryPrompt || config.ai_stuck_retry_prompt;
+      log('AI_STUCK', `session=${sessionID} AI appears stuck, action=${action}`);
+
+      if (action === 'ignore') {
+        log('AI_STUCK', `session=${sessionID} ignoring stuck state`);
+        return;
+      }
+
+      if (action === 'abort' || action === 'abort_and_retry') {
+        try {
+          await client.session.abort({
+            path: { id: sessionID },
+            query: { directory },
+          });
+          log('AI_STUCK', `session=${sessionID} abort successful`);
+        } catch (err) {
+          log('AI_STUCK_ERR', `session=${sessionID} abort failed: ${err.message}`);
+          return;
+        }
+      }
+
+      if (action === 'abort_and_retry') {
+        log('AI_STUCK', `session=${sessionID} waiting 30 seconds before retry`);
+        await new Promise(resolve => setTimeout(resolve, 30000));
+
+        const sid = sessionID || activeSessionID;
+        if (!sid) {
+          log('AI_STUCK', 'No active session, skipping retry');
+          return;
+        }
+
+        await sendPrompt(sid, retryPrompt, 'AI_STUCK', { idleExit: 31000, userMessage: 32000 });
+      }
+    },
   });
 
   const trigger = new SubagentTrigger({ client, detector, log, directory });
 
-  async function sendPrompt(sessionID) {
-    const promptContent = fileWatch.readPrompt();
+  /**
+   * 发送提示词到 OpenCode
+   * @param {string} sessionID - 会话 ID
+   * @param {string} promptContentOrCallback - 提示词内容或回调函数
+   * @param {string} logPrefix - 日志前缀
+   * @param {Object} additionalDelayMs - 额外延迟时间配置
+   * @param {number} additionalDelayMs.idleExit - 空闲退出延迟
+   * @param {number} additionalDelayMs.userMessage - 用户消息延迟
+   */
+  async function sendPrompt(sessionID, promptContentOrCallback, logPrefix = 'PROMPT', additionalDelayMs = { idleExit: 1000, userMessage: 2000 }) {
+    const promptContent = typeof promptContentOrCallback === 'string' 
+      ? promptContentOrCallback 
+      : fileWatch.readPrompt();
+    
     if (!promptContent.trim()) {
       log('SKIP', 'Prompt content is empty, skipping');
       return;
@@ -175,11 +278,14 @@ function loadConfig(directory) {
       return;
     }
 
-    log('PROMPT', `session=${sid} sending prompt (len=${promptContent.length})`);
+    const actualLogPrefix = typeof promptContentOrCallback === 'string' ? logPrefix : 'PROMPT';
+    const actualAdditionalDelayMs = typeof promptContentOrCallback === 'string' ? additionalDelayMs : { idleExit: 1000, userMessage: 2000 };
+
+    log(actualLogPrefix, `session=${sid} sending prompt (len=${promptContent.length})`);
     detector.setPromptInFlight(true);
-    detector.setSkipNextIdleExit(1000);  // Skip idle->busy transition for 1 seconds
-    detector.setSkipNextUserMessage(2000);  // Skip plugin's own message as user input
-    
+    detector.setSkipNextIdleExit(actualAdditionalDelayMs.idleExit);
+    detector.setSkipNextUserMessage(actualAdditionalDelayMs.userMessage);
+
     try {
       await client.session.prompt({
         path: { id: sid },
@@ -187,9 +293,9 @@ function loadConfig(directory) {
           parts: [{ type: 'text', text: promptContent }],
         },
       });
-      log('PROMPT_DONE', `session=${sid} reply complete`);
+      log(actualLogPrefix + '_DONE', `session=${sid} reply complete`);
     } catch (err) {
-      log('PROMPT_ERR', `session=${sid} ${err.message}`);
+      log(actualLogPrefix + '_ERR', `session=${sid} ${err.message}`);
     } finally {
       detector.setPromptInFlight(false);
     }
@@ -206,7 +312,7 @@ function loadConfig(directory) {
 
   log('INIT', `Plugin idle-continue initialized | directory=${directory}`);
   log('DESIGN', JSON.stringify({
-    signals: ['session.status', 'session.idle', 'permission.asked', 'permission.replied', 'question.asked', 'question.replied2', 'question.rejected2', 'chat.message'],
+    signals: ['session.status', 'session.idle', 'permission.asked', 'permission.replied', 'question.asked', 'question.replied', 'question.rejected', 'chat.message', 'message.updated', 'message.part.updated', 'message.part.delta', 'tui.prompt.append'],
     subagent_enabled: config.subagent_enabled,
     rule: config.subagent_enabled 
       ? 'TRUE_IDLE -> wait delay -> subagent trigger via Task tool'
@@ -221,10 +327,19 @@ function loadConfig(directory) {
       subagent_agent_type: config.subagent_agent_type,
       subagent_delay_ms: config.subagent_delay_ms,
       debounce_delay_ms: config.debounce_delay_ms,
+      stuck_threshold_minutes: config.stuck_threshold_minutes,
     },
   }));
 
+  /**
+   * 返回插件钩子对象
+   */
   return {
+    /**
+     * 事件处理钩子
+     * @param {Object} input - 输入事件
+     * @param {Object} input.event - 事件对象
+     */
     event: async (input) => {
       const { event } = input;
       if (event?.type === 'session.status') {
@@ -234,8 +349,19 @@ function loadConfig(directory) {
         activeSessionID = event.properties?.sessionID || event.properties?.info?.id || activeSessionID;
       }
       detector.handleEvent(input);
+      detector.handleMessageEvent(input);
     },
 
+    /**
+     * 聊天消息处理钩子
+     * @param {Object} input - 输入消息
+     * @param {string} input.sessionID - 会话 ID
+     * @param {string} input.messageID - 消息 ID
+     * @param {Object} input.model - 模型信息
+     * @param {Object} output - 输出消息
+     * @param {Object} output.message - 消息对象
+     * @param {Array} output.parts - 消息部分
+     */
     "chat.message": async (input, output) => {
       const { sessionID, messageID, model } = input;
       const { message, parts } = output;
@@ -257,6 +383,9 @@ function loadConfig(directory) {
       detector.handleChatMessage(input, output);
     },
 
+    /**
+     * 插件清理钩子
+     */
     dispose: async () => {
       log('DISPOSE', 'Plugin shutting down');
       cancelPendingTimer('dispose');

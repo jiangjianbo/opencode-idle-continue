@@ -1,14 +1,16 @@
 /**
- * SubagentTrigger
- *
+ * SubagentTrigger - 子代理触发器类
+ * 
  * 通过向主会话注入 prompt，指示主 agent 调用内置 Task 工具来启动子代理。
  * 宿主（OpenCode Host）接管全部子会话生命周期：
  *   - 创建子会话 (ses_xxx)
  *   - 渲染 <task id="ses_xxx" state="running/completed"> 可点击链接
  *   - 自动保存子会话完整消息历史到 ~/.local/share/opencode/storage/
  *   - 子代理完成后向父会话注入合成消息
- *
+ * 
  * 设计参考：../swarm-subagent-screen.md Pattern 1（agent 调用 Task 工具）
+ * 
+ * @class SubagentTrigger
  */
 export class SubagentTrigger {
   #client;
@@ -18,6 +20,14 @@ export class SubagentTrigger {
   #inFlight = false;
   #count = 0;
 
+  /**
+   * 构造函数 - 初始化子代理触发器
+   * @param {Object} options - 配置选项
+   * @param {Object} options.client - OpenCode 客户端对象
+   * @param {OpenCodeTrueIdleDetector} options.detector - 空闲检测器实例
+   * @param {Function} options.log - 日志记录函数
+   * @param {string} options.directory - 项目目录
+   */
   constructor({ client, detector, log, directory }) {
     this.#client = client;
     this.#detector = detector;
@@ -25,10 +35,18 @@ export class SubagentTrigger {
     this.#directory = directory;
   }
 
+  /**
+   * 获取执行状态
+   * @returns {boolean} 是否正在执行中
+   */
   get inFlight() {
     return this.#inFlight;
   }
 
+  /**
+   * 获取执行次数
+   * @returns {number} 总执行次数
+   */
   get count() {
     return this.#count;
   }

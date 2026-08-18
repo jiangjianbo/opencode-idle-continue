@@ -8,5 +8,8 @@
   "enable_default_prompt": false,
   "subagent_enabled": false,
   "subagent_agent_type": "explore",
-  "subagent_delay_ms": 60000
+  "subagent_delay_ms": 60000,
+  "stuck_threshold_minutes": 20,
+  "ai_stuck_action": "ignore",
+  "ai_stuck_retry_prompt": "continue"
 }
