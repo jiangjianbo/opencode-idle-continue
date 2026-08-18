@@ -18,9 +18,9 @@
  * - `#pendingCheck`: 待执行的空闲检查定时器
  * - `#stuckCheckTimer`: AI卡死检查定时器
  * 
- * ### 临时抑制状态
- * - `#skipNextUserMessage`: 跳过下一个用户消息
- * - `#skipNextIdleExit`: 跳过下一次idle退出事件
+ * ### 临时抑制状态 (统一管理)
+ * - `#idleExitSuppressor`: idle退出抑制器
+ * - `#userMessageSuppressor`: 用户消息抑制器
  * - `#promptInFlight`: 提示词正在发送中
  * 
  * ### 用户活动状态
@@ -39,7 +39,9 @@
  *   !#interrupted &&                 // 未被用户中断
  *   !#hasUncommittedInput &&         // 输入框为空
  *   !#isScrolling &&                 // 未在滚动页面
- *   !#promptInFlight                // 提示词不在发送中
+ *   !#promptInFlight &&             // 提示词不在发送中
+ *   !#idleExitSuppressor.isSuppressed() &&   // 不在idle退出抑制期间
+ *   !#userMessageSuppressor.isSuppressed() // 不在用户消息抑制期间
  * ```
  * 
  * ## 状态转换真值表
@@ -53,20 +55,32 @@
  * | `question.asked` | - | waitingQuestion=true | - |
  * | `question.replied` | - | waitingQuestion=false | scheduleCheck if idle |
  * | `session.status: idle` + 等待 | trueIdle | - | onIdle |
- * | `user message` | !promptInFlight | status=busy, cleared | onUserInput |
+ * | `user message` | !promptInFlight && !userMessageSuppressor.isSuppressed() | status=busy, cleared | onUserInput |
  * | `assistant error: AbortedError` | - | interrupted=true | onUserInterrupt |
- * | `user input` | - | interrupted=false | - |
+ * | `user input` | - | interrupted=false, clearSuppressors | - |
  * | `message.part.delta` | status=busy | lastActivityAt=now | - |
  * | `tui.prompt.content` | content.length>0 | hasUncommittedInput=true | - |
  * | `ui.scroll` | - | isScrolling=true | - |
  * | `ui.scroll.end` | - | isScrolling=false | - |
+ * | `suppressIdleExit(duration)` | - | idleExitSuppressor.suppress(duration) | - |
+ * | `suppressUserMessage(duration)` | - | userMessageSuppressor.suppress(duration) | - |
  * 
  * ## 定时器管理
  * 
  * - `#pendingCheck`: 空闲检查定时器 (基于baseDelay，支持指数退避)
  * - `#stuckCheckTimer`: AI卡死检查定时器 (60秒周期)
- * - `#skipNextUserMessageTimer`: 跳过用户消息的临时定时器
- * - `#skipNextIdleExitTimer`: 跳过idle退出的临时定时器
+ * 
+ * ## 抑制器使用场景
+ * 
+ * ### idleExitSuppressor 使用场景
+ * - 插件发送提示词后1-2秒内跳过idle退出事件
+ * - AI卡死恢复后30秒内跳过idle退出事件
+ * - 其他插件操作期间防止意外的idle退出
+ * 
+ * ### userMessageSuppressor 使用场景  
+ * - 插件发送提示词后2秒内跳过用户消息处理
+ * - AI卡死恢复后32秒内跳过用户消息处理
+ * - 防止插件自身消息被当作用户输入
  * 
  * ## 注意事项
  * 
@@ -74,10 +88,72 @@
  * 2. **定时器清理**: dispose时必须清理所有定时器，防止内存泄漏
  * 3. **回调幂等性**: 所有回调都应该幂等，避免重复调用
  * 4. **条件完整性**: trueIdle检查必须包含所有阻止条件，避免误触发
+ * 5. **抑制器统一管理**: 所有临时跳过状态通过抑制器统一管理，避免分散
  * 
  * @class OpenCodeTrueIdleDetector
  */
 export class OpenCodeTrueIdleDetector {
+  /**
+   * 活跃抑制器 - 管理临时跳过状态
+   * 
+   * 集中管理所有临时跳过状态和过期时间，避免状态不一致。
+   * 
+   * @private
+   */
+  #Suppressor = class {
+    #active = false;
+    #expiryTime = 0;
+    #reason = null;
+    #log;
+    #name;
+
+    constructor(log, name = 'Suppressor') {
+      this.#log = log;
+      this.#name = name;
+    }
+
+    suppress(durationMs, reason = 'unknown') {
+      this.#active = true;
+      this.#expiryTime = Date.now() + durationMs;
+      this.#reason = reason;
+      this.#log(this.#name.toUpperCase(), `suppressed for ${durationMs}ms, reason: ${reason}`);
+    }
+
+    isSuppressed() {
+      if (!this.#active) return false;
+      
+      if (this.#expiryTime !== Infinity && Date.now() >= this.#expiryTime) {
+        this.#active = false;
+        this.#reason = null;
+        this.#log(this.#name.toUpperCase(), 'suppress expired');
+        return false;
+      }
+      return true;
+    }
+
+    clear() {
+      if (this.#active) {
+        this.#log(this.#name.toUpperCase(), 'cleared manually');
+      }
+      this.#active = false;
+      this.#expiryTime = 0;
+      this.#reason = null;
+    }
+
+    getRemainingTime() {
+      if (!this.#active) return 0;
+      return Math.max(0, this.#expiryTime - Date.now());
+    }
+
+    getStatus() {
+      return {
+        active: this.isSuppressed(),
+        remainingTime: this.getRemainingTime(),
+        reason: this.#reason
+      };
+    }
+  };
+
   #log;
   #BASE_DELAY;
   #currentDelay;
@@ -94,11 +170,9 @@ export class OpenCodeTrueIdleDetector {
   #onUserInputActivity;
   #onAiStuck;
   #interrupted = false;
-  #skipNextUserMessage = false;
-  #skipNextIdleExit = false;
+  #idleExitSuppressor;
+  #userMessageSuppressor;
   #promptInFlight = false;
-  #skipNextUserMessageTimer = null;
-  #skipNextIdleExitTimer = null;
   #stuckThresholdMinutes = 20;
   #lastActivityAt = null;
   #stuckCheckTimer = null;
@@ -137,6 +211,9 @@ export class OpenCodeTrueIdleDetector {
     this.#stuckThresholdMinutes = stuckThresholdMinutes;
     this.#stuckAction = stuckAction;
     this.#stuckRetryPrompt = stuckRetryPrompt;
+    
+    this.#idleExitSuppressor = new this.#Suppressor(log, 'IDLE_EXIT');
+    this.#userMessageSuppressor = new this.#Suppressor(log, 'USER_MESSAGE');
   }
 
   /**
@@ -206,60 +283,79 @@ export class OpenCodeTrueIdleDetector {
   }
 
   /**
-   * 设置跳过下一个用户消息的标志
-   * @param {number} delayMs - 延迟时间（毫秒），0 表示永久跳过直到手动清除
-   */
-  setSkipNextUserMessage(delayMs = 1000) {
-    if (this.#skipNextUserMessageTimer) {
-      clearTimeout(this.#skipNextUserMessageTimer);
-      this.#skipNextUserMessageTimer = null;
-    }
-    this.#skipNextUserMessage = true;
-    
-    if (delayMs > 0) {
-      this.#skipNextUserMessageTimer = setTimeout(() => {
-        this.#skipNextUserMessage = false;
-        this.#skipNextUserMessageTimer = null;
-      }, delayMs);
-    }
-  }
-
-  /**
-   * 设置跳过下一个空闲退出的标志
-   * @param {number} delayMs - 延迟时间（毫秒）
-   */
-  setSkipNextIdleExit(delayMs = 2000) {
-    if (this.#skipNextIdleExitTimer) {
-      clearTimeout(this.#skipNextIdleExitTimer);
-      this.#skipNextIdleExitTimer = null;
-    }
-    this.#skipNextIdleExit = true;
-    
-    if (delayMs > 0) {
-      this.#skipNextIdleExitTimer = setTimeout(() => {
-        this.#skipNextIdleExit = false;
-        this.#skipNextIdleExitTimer = null;
-      }, delayMs);
-    }
-  }
-
-  /**
-   * 清除跳过下一个用户消息的标志
-   */
-  clearSkipNextUserMessage() {
-    if (this.#skipNextUserMessageTimer) {
-      clearTimeout(this.#skipNextUserMessageTimer);
-      this.#skipNextUserMessageTimer = null;
-    }
-    this.#skipNextUserMessage = false;
-  }
-
-  /**
    * 设置提示词发送状态
    * @param {boolean} value - 提示词是否正在发送中
    */
   setPromptInFlight(value) {
     this.#promptInFlight = value;
+  }
+
+  /**
+   * 抑制空闲退出事件（向后兼容方法）
+   * @param {number} delayMs - 抑制持续时间（毫秒），0表示永久抑制直到手动清除
+   */
+  setSkipNextIdleExit(delayMs = 2000) {
+    if (delayMs === 0) {
+      this.#idleExitSuppressor.suppress(Infinity, 'permanent skip (backward compatibility)');
+    } else {
+      this.#idleExitSuppressor.suppress(delayMs, 'backward compatibility');
+    }
+  }
+
+  /**
+   * 抑制用户消息处理（向后兼容方法）
+   * @param {number} delayMs - 抑制持续时间（毫秒），0表示永久抑制直到手动清除
+   */
+  setSkipNextUserMessage(delayMs = 1000) {
+    if (delayMs === 0) {
+      this.#userMessageSuppressor.suppress(Infinity, 'permanent skip (backward compatibility)');
+    } else {
+      this.#userMessageSuppressor.suppress(delayMs, 'backward compatibility');
+    }
+  }
+
+  /**
+   * 清除用户消息抑制（向后兼容方法）
+   */
+  clearSkipNextUserMessage() {
+    this.#userMessageSuppressor.clear();
+  }
+
+  /**
+   * 抑制空闲退出事件（新推荐方法）
+   * @param {number} durationMs - 抑制持续时间（毫秒）
+   * @param {string} reason - 抑制原因
+   */
+  suppressIdleExit(durationMs, reason = 'unknown') {
+    this.#idleExitSuppressor.suppress(durationMs, reason);
+  }
+
+  /**
+   * 抑制用户消息处理（新推荐方法）
+   * @param {number} durationMs - 抑制持续时间（毫秒）
+   * @param {string} reason - 抑制原因
+   */
+  suppressUserMessage(durationMs, reason = 'unknown') {
+    this.#userMessageSuppressor.suppress(durationMs, reason);
+  }
+
+  /**
+   * 清除所有抑制状态
+   */
+  clearSuppressors() {
+    this.#idleExitSuppressor.clear();
+    this.#userMessageSuppressor.clear();
+  }
+
+  /**
+   * 获取抑制器状态（用于调试）
+   * @returns {Object} 抑制器状态信息
+   */
+  getSuppressorStatus() {
+    return {
+      idleExit: this.#idleExitSuppressor.getStatus(),
+      userMessage: this.#userMessageSuppressor.getStatus()
+    };
   }
 
   /**
@@ -392,8 +488,8 @@ export class OpenCodeTrueIdleDetector {
       this.#interrupted = true;
       this.#log('INTERRUPT', `session=${sessionID} msg=${messageID} AI response aborted by user`);
       this.#onUserInterrupt?.(sessionID);
-    } else if (role === 'user') {
-      if (!this.#skipNextUserMessage) {
+     } else if (role === 'user') {
+      if (!this.#userMessageSuppressor.isSuppressed()) {
         this.#log('USER_INPUT', `session=${sessionID} msg=${messageID} manual user input`);
         if (!this.#promptInFlight) {
           this.handleUserInput(sessionID);
@@ -401,7 +497,8 @@ export class OpenCodeTrueIdleDetector {
         }
       }
     }
-    this.#skipNextUserMessage = false;
+    // 处理完每个用户消息后清除抑制器状态（向后兼容行为）
+    this.#userMessageSuppressor.clear();
   }
 
   /**
@@ -473,7 +570,7 @@ export class OpenCodeTrueIdleDetector {
           this.#currentDelay = this.#BASE_DELAY;
           this.#lastActivityAt = Date.now();
           this.#scheduleStuckCheck(sid);
-          if (!this.#skipNextIdleExit) {
+          if (!this.#idleExitSuppressor.isSuppressed()) {
             this.#log('IDLE_END', `session=${sid} idle -> busy`);
             this.#onIdleExit?.(sid);
           }
@@ -539,21 +636,21 @@ export class OpenCodeTrueIdleDetector {
    * 清理资源，释放定时器
    */
   dispose() {
+    this.#log('DISPOSE', 'Cleaning up detector resources');
+    
     if (this.#pendingCheck) {
       clearTimeout(this.#pendingCheck);
       this.#pendingCheck = null;
-    }
-    if (this.#skipNextUserMessageTimer) {
-      clearTimeout(this.#skipNextUserMessageTimer);
-      this.#skipNextUserMessageTimer = null;
-    }
-    if (this.#skipNextIdleExitTimer) {
-      clearTimeout(this.#skipNextIdleExitTimer);
-      this.#skipNextIdleExitTimer = null;
     }
     if (this.#stuckCheckTimer) {
       clearTimeout(this.#stuckCheckTimer);
       this.#stuckCheckTimer = null;
     }
+    
+    // 清理抑制器（Suppressor内部会清理自己的定时器）
+    this.#idleExitSuppressor.clear();
+    this.#userMessageSuppressor.clear();
+    
+    this.#log('DISPOSE', 'Detector resources cleaned up');
   }
 }
