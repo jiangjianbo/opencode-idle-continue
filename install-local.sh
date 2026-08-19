@@ -3,6 +3,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Usage: install-local.sh [system|local|path]
+#   system - Install to system config (~/.config/opencode/)
+#   local  - Install to current project (.opencode/)
+#   path   - Install to specified path's .opencode/
+
+INSTALL_MODE="${1:-local}"
+
 # ============================================================
 # Project root detection
 # Walks upward from CWD to find the first directory containing
@@ -39,11 +46,35 @@ find_project_root() {
   return 1
 }
 
-ROOT="$(find_project_root "$(pwd)")" || {
-  echo "[install] Warning: Could not find project root (no AI agent config detected)."
-  echo "[install] Falling back to current directory."
-  ROOT="$(pwd)"
-}
+# Determine installation location based on mode
+case "$INSTALL_MODE" in
+  system)
+    # System-wide installation
+    ROOT="$HOME/.config/opencode"
+    if [ ! -d "$ROOT" ]; then
+      echo "[install] Creating system config directory: $ROOT"
+      mkdir -p "$ROOT"
+    fi
+    ;;
+  local)
+    # Local project installation
+    ROOT="$(find_project_root "$(pwd)")" || {
+      echo "[install] Warning: Could not find project root (no AI agent config detected)."
+      echo "[install] Falling back to current directory."
+      ROOT="$(pwd)"
+    }
+    ;;
+  *)
+    # Specific path installation
+    if [ -d "$INSTALL_MODE" ]; then
+      ROOT="$INSTALL_MODE"
+    else
+      echo "[install] Error: Path does not exist: $INSTALL_MODE"
+      echo "[install] Usage: $0 [system|local|/path/to/project]"
+      exit 1
+    fi
+    ;;
+esac
 
 OPENCODE_DIR="$ROOT/.opencode"
 PLUGIN_DIR="$OPENCODE_DIR/plugins/idle-continue"
@@ -52,24 +83,24 @@ CONFIG_PATH="$OPENCODE_DIR/opencode.json"
 # Ensure .opencode/ directory exists
 mkdir -p "$OPENCODE_DIR"
 
+echo "[install] Installation mode: $INSTALL_MODE"
+echo "[install] Installation root: $ROOT"
 echo "[install] Building opencode-idle-continue ..."
 
 # Step 1: Build to dist/ (from script dir, where source code lives)
 cd "$SCRIPT_DIR"
 npm run build
 
-echo "[install] Build complete. Packing npm package ..."
+echo "[install] Build complete. Cleaning up old installation if exists ..."
 
-# Step 2: Create npm tarball from dist/
-PACKAGE_NAME="opencode-idle-continue-$(node -p "require('./package.json').version").tgz"
-cd "$SCRIPT_DIR/dist"
-npm pack --pack-destination "$SCRIPT_DIR/dist" 2>/dev/null
-cd "$SCRIPT_DIR"
+# Step 2: Clean up old installation
+# Remove old plugin directory if it exists
+if [ -d "$PLUGIN_DIR" ]; then
+  echo "[install] Removing old plugin directory: $PLUGIN_DIR"
+  rm -rf "$PLUGIN_DIR"
+fi
 
-echo "[install] Package created: dist/$PACKAGE_NAME"
-
-# Step 3: Install to project root .opencode/plugins/idle-continue/
-echo "[install] Installing plugin to $PLUGIN_DIR ..."
+# Step 3: Install to target location
 mkdir -p "$PLUGIN_DIR"
 cp -R "$SCRIPT_DIR/dist/"* "$PLUGIN_DIR/"
 rm -f "$PLUGIN_DIR/package.tgz" 2>/dev/null
@@ -77,50 +108,61 @@ rm -f "$PLUGIN_DIR/package.tgz" 2>/dev/null
 # Copy root package.json for npm metadata so OpenCode can resolve @opencode-ai/plugin
 cp "$SCRIPT_DIR/package.json" "$PLUGIN_DIR/root-package.json"
 
-# Step 4: Ensure .opencode/ has its own node_modules with @opencode-ai/plugin
-if [ ! -d "$OPENCODE_DIR/node_modules/@opencode-ai/plugin" ]; then
-  echo "[install] Installing @opencode-ai/plugin in .opencode/ ..."
-  cd "$OPENCODE_DIR"
-  echo '{"name":"opencode-config","version":"1.0.0"}' > package.json
-  npm install @opencode-ai/plugin 2>/dev/null
-  cd "$SCRIPT_DIR"
+# Step 4: Use shared install-utils to handle config and dependency installation
+# Create a temporary Node.js script to use shared install-utils
+# Convert SCRIPT_DIR to proper Windows path for Node.js
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
+    # Convert Git Bash path to Windows path
+    SCRIPT_DIR_WIN=$(cd "$SCRIPT_DIR" && pwd -W)
+else
+    SCRIPT_DIR_WIN="$SCRIPT_DIR"
 fi
 
-# Step 5: Update opencode.json
-if [ ! -f "$CONFIG_PATH" ]; then
-  echo "{}" > "$CONFIG_PATH"
-fi
+cat > /tmp/install_local_helper.mjs << EOF
+import { loadJson, saveJson, addPluginReference, cleanupOldPluginDirectories, installOpencodePluginDependency } from 'file:///${SCRIPT_DIR_WIN}/dist/cli/install-utils.js';
+import * as path from 'node:path';
+import * as fs from 'node:fs';
 
-PLUGIN_REF="./plugins/idle-continue/index.js"
-# Create a temporary Node.js script to avoid shell escaping issues
-cat > /tmp/update_opencode_config.js << 'EOF'
-const fs = require('fs');
-const path = require('path');
+const openCodeDir = process.argv[2];
+const pluginRef = './plugins/idle-continue/index.js';
+const configPath = path.join(openCodeDir, 'opencode.json');
 
-const configDir = process.argv[2];
-const configPath = path.join(configDir, 'opencode.json');
-const pluginRef = process.argv[3];
-
-let cfg = {};
-if (fs.existsSync(configPath)) {
-  cfg = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+// Initialize config if doesn't exist
+let opencodeConfig = loadJson(configPath);
+if (!opencodeConfig) {
+  opencodeConfig = {};
 }
 
-cfg.plugin = cfg.plugin || [];
-if (!cfg.plugin.includes(pluginRef)) {
-  cfg.plugin.push(pluginRef);
-}
-cfg['$schema'] = 'https://opencode.ai/config.json';
-fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n');
-console.log('Config updated:', configPath);
+// Use shared addPluginReference with local-specific settings
+addPluginReference(opencodeConfig, pluginRef, { 
+  verbose: true, 
+  upgradeMessage: 'Upgrading to local installation...' 
+});
+
+// Save config
+saveJson(configPath, opencodeConfig);
+console.log('[install] ✓ Config updated:', configPath);
+
+// Cleanup old plugin directories using shared function
+cleanupOldPluginDirectories(openCodeDir, { verbose: true });
+
+// Install @opencode-ai/plugin dependency using shared function
+installOpencodePluginDependency(openCodeDir, { verbose: true });
 EOF
 
-node /tmp/update_opencode_config.js "$OPENCODE_DIR" "$PLUGIN_REF"
+cd "$SCRIPT_DIR"
+node /tmp/install_local_helper.mjs "$OPENCODE_DIR"
+rm -f /tmp/install_local_helper.mjs
 
 echo ""
 echo "[install] === Install complete ==="
-echo "[install] Project root: $ROOT"
-echo "[install] Plugin:  $PLUGIN_DIR"
-echo "[install] Config:  $CONFIG_PATH"
-echo "[install] Package: dist/$PACKAGE_NAME"
+echo "[install] Installation mode: $INSTALL_MODE"
+echo "[install] Installation root: $ROOT"
+echo "[install] Plugin location:   $PLUGIN_DIR"
+echo "[install] Config file:       $CONFIG_PATH"
+if [ "$INSTALL_MODE" = "system" ]; then
+  echo "[install] System-wide installation - available for all projects"
+else
+  echo "[install] Project-specific installation"
+fi
 echo "[install] Restart opencode to load the plugin."

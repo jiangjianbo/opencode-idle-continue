@@ -4,12 +4,12 @@
   "check_interval_minutes": 30,
   "max_idle_cycles": 5,
   "enabled": true,
-  "log_enabled": false,
+  "log_enabled": true,
   "enable_default_prompt": false,
   "subagent_enabled": false,
   "subagent_agent_type": "explore",
   "subagent_delay_ms": 60000,
-  "stuck_threshold_minutes": 20,
-  "ai_stuck_action": "ignore",
+  "stuck_threshold_minutes": 5,
+  "ai_stuck_action": "abort_and_retry",
   "ai_stuck_retry_prompt": "continue"
 }

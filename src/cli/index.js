@@ -1,8 +1,20 @@
 #!/usr/bin/env node
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import packageJson from '../../package.json' with { type: 'json' };
+import {
+  PLUGIN_NAME,
+  PLUGIN_VERSION,
+  DEFAULT_PLUGIN_CONFIG,
+  getOpencodeConfigDir,
+  ensureDir,
+  loadJson,
+  saveJson,
+  findProjectRoot,
+  addPluginReference,
+  cleanupOldPluginDirectories,
+  evictPluginCaches,
+} from './install-utils.js';
 
 const { version } = packageJson;
 
@@ -10,52 +22,36 @@ const CONFIG_DIR = getOpencodeConfigDir();
 const OPENCODE_CONFIG_PATH = path.join(CONFIG_DIR, 'opencode.json');
 const PLUGIN_CONFIG_PATH = path.join(CONFIG_DIR, 'idle-continue.json');
 
-const PLUGIN_NAME = 'opencode-idle-continue';
-const PLUGIN_VERSION = packageJson.version;
+const AI_AGENT_DIRS = [
+  '.opencode', '.claude', '.cursor', '.windsurf', '.continue', '.github', '.copilot',
+];
+const AI_AGENT_FILES = [
+  'agents.md', 'AGENTS.md', 'claude.md', 'CLAUDE.md', '.cursorrules', '.windsurfrules',
+  'continue.json', 'continue.md', 'COPILOT_INSTRUCTIONS.md',
+];
 
-const DEFAULT_PLUGIN_CONFIG = {
-  prompt_file: 'idle-prompt.md',
-  watch_files: ['task.md', 'wish-list.md'],
-  check_interval_minutes: 30,
-  max_idle_cycles: 5,
-  enabled: true,
-  subagent_enabled: false,
-  subagent_agent_type: 'explore',
-  subagent_delay_ms: 60_000,
-};
+function findProjectRootLocal(startDir) {
+  let dir = path.resolve(startDir);
 
-function getOpencodeConfigDir() {
-  const platform = os.platform();
-  
-  if (platform === 'win32') {
-    return path.join(os.homedir(), '.config', 'opencode');
-  } else if (platform === 'darwin') {
-    return path.join(os.homedir(), '.config', 'opencode');
-  } else {
-    return path.join(os.homedir(), '.config', 'opencode');
+  while (dir !== path.dirname(dir)) {
+    for (const marker of AI_AGENT_DIRS) {
+      try {
+        if (fs.statSync(path.join(dir, marker)).isDirectory()) {
+          return dir;
+        }
+      } catch {}
+    }
+    for (const marker of AI_AGENT_FILES) {
+      try {
+        if (fs.statSync(path.join(dir, marker)).isFile()) {
+          return dir;
+        }
+      } catch {}
+    }
+    dir = path.dirname(dir);
   }
-}
 
-function ensureDir(dir) {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-}
-
-function loadJson(filepath) {
-  try {
-    const content = fs.readFileSync(filepath, 'utf-8');
-    const stripped = content
-      .replace(/\\"|"(?:\\"|[^"])*"|(\/\/.*|\/\*[\s\S]*?\*\/)/g, (match, comment) => (comment ? '' : match))
-      .replace(/,(\s*[}\]])/g, '$1');
-    return JSON.parse(stripped);
-  } catch {
-    return null;
-  }
-}
-
-function saveJson(filepath, data) {
-  fs.writeFileSync(filepath, `${JSON.stringify(data, null, 2)}\n`, 'utf-8');
+  return null;
 }
 
 function printHelp() {
@@ -111,17 +107,12 @@ async function installToSystem() {
     opencodeConfig = {};
   }
 
-  if (!opencodeConfig.plugin) {
-    opencodeConfig.plugin = [];
-  }
-
-  opencodeConfig.plugin = opencodeConfig.plugin.filter(
-    (p) => p !== PLUGIN_NAME && !p.startsWith(`${PLUGIN_NAME}@`)
-  );
-  opencodeConfig.plugin.push(PLUGIN_NAME);
+  addPluginReference(opencodeConfig, PLUGIN_NAME, { 
+    verbose: true, 
+    upgradeMessage: 'Upgrading to global CLI installation...' 
+  });
 
   saveJson(OPENCODE_CONFIG_PATH, opencodeConfig);
-  console.log(`✓ Added ${PLUGIN_NAME} to OpenCode plugins`);
   console.log(`✓ OpenCode config: ${OPENCODE_CONFIG_PATH}`);
 
   if (!fs.existsSync(PLUGIN_CONFIG_PATH)) {
@@ -130,6 +121,8 @@ async function installToSystem() {
   } else {
     console.log(`✓ Plugin config exists: ${PLUGIN_CONFIG_PATH}`);
   }
+
+  cleanupOldPluginDirectories(CONFIG_DIR, { verbose: true });
 
   const evicted = evictPluginCaches();
   if (evicted.cleared.length > 0) {
@@ -142,42 +135,10 @@ async function installToSystem() {
   return 0;
 }
 
-const AI_AGENT_DIRS = [
-  '.opencode', '.claude', '.cursor', '.windsurf', '.continue', '.github', '.copilot',
-];
-const AI_AGENT_FILES = [
-  'agents.md', 'AGENTS.md', 'claude.md', 'CLAUDE.md', '.cursorrules', '.windsurfrules',
-  'continue.json', 'continue.md', 'COPILOT_INSTRUCTIONS.md',
-];
-
-function findProjectRoot(startDir) {
-  let dir = path.resolve(startDir);
-
-  while (dir !== path.dirname(dir)) {
-    for (const marker of AI_AGENT_DIRS) {
-      try {
-        if (fs.statSync(path.join(dir, marker)).isDirectory()) {
-          return dir;
-        }
-      } catch {}
-    }
-    for (const marker of AI_AGENT_FILES) {
-      try {
-        if (fs.statSync(path.join(dir, marker)).isFile()) {
-          return dir;
-        }
-      } catch {}
-    }
-    dir = path.dirname(dir);
-  }
-
-  return null;
-}
-
 async function installToLocal() {
   const cwd = process.cwd();
 
-  const root = findProjectRoot(cwd);
+  const root = findProjectRootLocal(cwd);
   if (root) {
     console.log(`🔧 Installing ${PLUGIN_NAME} v${PLUGIN_VERSION} to local project...\n`);
     console.log(`📁 Project root (detected): ${root}\n`);
@@ -198,17 +159,12 @@ async function installToLocal() {
     opencodeConfig = {};
   }
 
-  if (!opencodeConfig.plugin) {
-    opencodeConfig.plugin = [];
-  }
-
-  opencodeConfig.plugin = opencodeConfig.plugin.filter(
-    (p) => p !== PLUGIN_NAME && !p.startsWith(`${PLUGIN_NAME}@`)
-  );
-  opencodeConfig.plugin.push(PLUGIN_NAME);
+  addPluginReference(opencodeConfig, PLUGIN_NAME, { 
+    verbose: true, 
+    upgradeMessage: 'Upgrading to local CLI installation...' 
+  });
 
   saveJson(localConfigPath, opencodeConfig);
-  console.log(`✓ Added ${PLUGIN_NAME} to local plugins`);
   console.log(`✓ Local config: ${localConfigPath}`);
 
   if (!fs.existsSync(pluginConfigPath)) {
@@ -217,6 +173,8 @@ async function installToLocal() {
   } else {
     console.log(`✓ Plugin config exists: ${pluginConfigPath}`);
   }
+
+  cleanupOldPluginDirectories(opencodeDir, { verbose: true });
 
   console.log('\n🚀 Local installation complete!');
   console.log('Restart OpenCode in this directory to load the plugin.');
@@ -246,17 +204,12 @@ async function installToDir(targetDir) {
     opencodeConfig = {};
   }
 
-  if (!opencodeConfig.plugin) {
-    opencodeConfig.plugin = [];
-  }
-
-  opencodeConfig.plugin = opencodeConfig.plugin.filter(
-    (p) => p !== PLUGIN_NAME && !p.startsWith(`${PLUGIN_NAME}@`)
-  );
-  opencodeConfig.plugin.push(PLUGIN_NAME);
+  addPluginReference(opencodeConfig, PLUGIN_NAME, { 
+    verbose: true, 
+    upgradeMessage: 'Upgrading to local CLI installation...' 
+  });
 
   saveJson(localConfigPath, opencodeConfig);
-  console.log(`✓ Added ${PLUGIN_NAME} to plugins`);
   console.log(`✓ Config: ${localConfigPath}`);
 
   if (!fs.existsSync(pluginConfigPath)) {
@@ -265,6 +218,8 @@ async function installToDir(targetDir) {
   } else {
     console.log(`✓ Plugin config exists: ${pluginConfigPath}`);
   }
+
+  cleanupOldPluginDirectories(opencodeDir, { verbose: true });
 
   console.log('\n🚀 Installation complete!');
   console.log('Restart OpenCode in this directory to load the plugin.');
@@ -365,7 +320,7 @@ async function uninstallFromSystem() {
 
 async function uninstallFromLocal() {
   const cwd = process.cwd();
-  const root = findProjectRoot(cwd);
+  const root = findProjectRootLocal(cwd);
   const projectRoot = root || cwd;
   const opencodeDir = path.join(projectRoot, '.opencode');
   const localConfigPath = path.join(opencodeDir, 'opencode.json');
@@ -457,87 +412,6 @@ async function uninstallFromDir(targetDir) {
 
   console.log('\n✅ Uninstall complete!');
   return 0;
-}
-
-function getPluginCachePaths() {
-  const home = os.homedir();
-  const paths = [];
-
-  const xdgCache = process.env.XDG_CACHE_HOME || path.join(home, '.cache');
-  
-  paths.push(
-    path.join(xdgCache, 'opencode', 'node_modules', PLUGIN_NAME),
-    path.join(xdgCache, 'opencode', 'node_modules', `${PLUGIN_NAME}@latest`),
-    path.join(xdgCache, 'opencode', 'packages', `${PLUGIN_NAME}@latest`),
-    path.join(home, '.config', 'opencode', 'node_modules', PLUGIN_NAME),
-  );
-
-  if (os.platform() === 'win32') {
-    paths.push(
-      path.join(os.homedir(), 'AppData', 'Local', 'opencode', 'node_modules', PLUGIN_NAME),
-      path.join(os.homedir(), 'AppData', 'Local', 'opencode', 'node_modules', `${PLUGIN_NAME}@latest`),
-    );
-  } else if (os.platform() === 'darwin') {
-    paths.push(
-      path.join(home, 'Library', 'Caches', 'opencode', 'node_modules', PLUGIN_NAME),
-      path.join(home, 'Library', 'Caches', 'opencode', 'node_modules', `${PLUGIN_NAME}@latest`),
-    );
-  }
-
-  return paths;
-}
-
-function isSafeCachePath(p) {
-  const resolved = path.resolve(p);
-  const home = path.resolve(os.homedir());
-  
-  if (resolved === '/' || resolved === home || resolved.length <= home.length) {
-    return false;
-  }
-  
-  const segments = resolved.split(path.sep).filter((s) => s.length > 0);
-  if (segments.length < 4) {
-    return false;
-  }
-  
-  const leaf = path.basename(resolved);
-  if (leaf !== `${PLUGIN_NAME}@latest` && leaf !== PLUGIN_NAME) {
-    return false;
-  }
-  
-  const parent = path.basename(path.dirname(resolved));
-  if (parent !== 'packages' && parent !== 'node_modules') {
-    return false;
-  }
-  
-  const grandparent = path.basename(path.dirname(path.dirname(resolved)));
-  if (grandparent !== 'opencode') {
-    return false;
-  }
-  
-  return true;
-}
-
-function evictPluginCaches() {
-  const cleared = [];
-  const failed = [];
-  
-  for (const cachePath of getPluginCachePaths()) {
-    if (!fs.existsSync(cachePath)) continue;
-    if (!isSafeCachePath(cachePath)) {
-      failed.push(`${cachePath} (refused: failed safety check)`);
-      continue;
-    }
-    
-    try {
-      fs.rmSync(cachePath, { recursive: true, force: true });
-      cleared.push(cachePath);
-    } catch (err) {
-      failed.push(`${cachePath} (${err instanceof Error ? err.message : String(err)})`);
-    }
-  }
-  
-  return { cleared, failed };
 }
 
 async function main() {
