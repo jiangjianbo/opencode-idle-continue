@@ -27,6 +27,7 @@ const DEFAULT_CONFIG = {
   max_idle_cycles: 5,
   enabled: true,
   log_enabled: false,
+  log_level: 'none',
   enable_default_prompt: false,
   subagent_enabled: false,
   subagent_agent_type: 'explore',
@@ -38,22 +39,88 @@ const DEFAULT_CONFIG = {
 };
 
 /**
+ * 日志级别映射表
+ * 格式: { [logTag]: level }
+ * level: 'debug' | 'warn' | 'error' | 'none'
+ */
+const LOG_LEVEL_MAP = {
+  'INIT': 'debug',
+  'DESIGN': 'debug',
+  'STATUS': 'debug',
+  'IDLE': 'debug',
+  'CANDIDATE': 'debug',
+  'TRUE_IDLE': 'debug',
+  'ON_IDLE_EXIT': 'debug',
+  'SKIP': 'debug',
+  'DEBOUNCE': 'debug',
+  'PERM': 'debug',
+  'QUEST': 'debug',
+  'PROMPT': 'debug',
+  'PROMPT_DONE': 'debug',
+  'PROMPT_ERR': 'error',
+  'HOT_RELOAD': 'debug',
+  'FILES': 'debug',
+  'WAIT': 'debug',
+  'RESET': 'debug',
+  'ON_IDLE': 'debug',
+  'USER_INPUT': 'debug',
+  'AI_REPLY': 'debug',
+  'USER_INTERRUPT': 'debug',
+  'CANCEL': 'error',
+  'SCHEDULE': 'debug',
+  'INTERRUPT': 'error',
+  'TRIGGER': 'debug',
+  'TRIGGER_DONE': 'debug',
+  'TRIGGER_ERR': 'error',
+  'AI_STUCK': 'warn',
+  'AI_STUCK_ERR': 'error',
+  'DISPOSE': 'debug',
+  'INPUT_STATE': 'debug',
+  'SCROLL_STATE': 'debug',
+  'USER_INPUT_ACTIVITY': 'debug',
+  'HEARTBEAT': 'debug',
+  'IDLE_END': 'debug',
+  'STUCK_CHECK': 'debug',
+  'DEBUG_MSG_EVENT': 'debug',
+};
+
+/**
+ * 日志级别优先级（数字越大越严格）
+ */
+const LOG_LEVEL_PRIORITY = {
+  'debug': 0,
+  'warn': 1,
+  'error': 2,
+  'none': 3,
+};
+
+/**
  * 创建日志记录器
  * @param {string} logDir - 日志目录
- * @param {boolean} enabled - 是否启用日志
+ * @param {string} logLevel - 日志级别 ('debug' | 'warn' | 'error' | 'none')
  * @returns {Function} 日志记录函数
  */
-function createLogger(logDir, enabled) {
-  if (!enabled) {
+function createLogger(logDir, logLevel) {
+  const levelPriority = LOG_LEVEL_PRIORITY[logLevel] ?? 3;
+  
+  // 当 log-level 为 none 时，不创建目录，返回空函数
+  if (logLevel === 'none') {
     return () => {};
   }
+  
   if (!fs.existsSync(logDir)) {
     fs.mkdirSync(logDir, { recursive: true });
   }
   const now = new Date();
   const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
   const logPath = path.join(logDir, `log-${ts}.log`);
+  
   return (level, msg) => {
+    const tagPriority = LOG_LEVEL_PRIORITY[LOG_LEVEL_MAP[level] ?? 'debug'];
+    if (tagPriority < levelPriority) {
+      return;
+    }
+    
     const t = new Date().toISOString();
     fs.appendFileSync(logPath, `[${t}] [${level}] ${msg}\n`);
   };
@@ -106,7 +173,20 @@ function loadConfig(directory) {
   try {
     const raw = fs.readFileSync(configPath, 'utf-8');
     const parsed = JSON.parse(raw);
-    return { ...DEFAULT_CONFIG, ...parsed };
+    const config = { ...DEFAULT_CONFIG, ...parsed };
+    
+    // 兼容旧的 log_enabled 字段
+    if (parsed.log_enabled !== undefined && parsed.log_level === undefined) {
+      config.log_level = parsed.log_enabled ? 'error' : 'none';
+    }
+    
+    // 验证 log_level 的值
+    const validLevels = ['debug', 'warn', 'error', 'none'];
+    if (!validLevels.includes(config.log_level)) {
+      config.log_level = 'none';
+    }
+    
+    return config;
   } catch {
     return { ...DEFAULT_CONFIG };
   }
@@ -124,7 +204,7 @@ const server = async (input) => {
   const config = loadConfig(directory);
 
   const logDir = path.join(directory, '.log');
-  const log = createLogger(logDir, config.log_enabled);
+  const log = createLogger(logDir, config.log_level);
   log('INIT', `Config loaded: ${JSON.stringify(config)}`);
 
   const promptFilePath = findPromptFile(directory, config.prompt_file);
@@ -194,6 +274,13 @@ const server = async (input) => {
     },
     onIdleExit: (sessionID) => {
       if (!config.enabled) return;
+      
+      // 如果提示词正在发送中，跳过 idle exit 事件（防止插件自身活动重置 wait state）
+      if (detector.promptInFlight) {
+        log('ON_IDLE_EXIT', `session=${sessionID} idle exit skipped during prompt sending`);
+        return;
+      }
+      
       log('ON_IDLE_EXIT', `session=${sessionID} idle exit`);
       cancelPendingTimer(sessionID);
       waitState.onIdleExit();
@@ -294,6 +381,10 @@ const server = async (input) => {
         },
       });
       log(actualLogPrefix + '_DONE', `session=${sid} reply complete`);
+      
+      // Extend suppression after AI response completes to prevent immediate re-triggering
+      detector.setSkipNextIdleExit(5000);
+      detector.setSkipNextUserMessage(5000);
     } catch (err) {
       log(actualLogPrefix + '_ERR', `session=${sid} ${err.message}`);
     } finally {

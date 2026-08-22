@@ -52,12 +52,40 @@
 | `check_interval_minutes` | number | `30` | 等待状态下的检测间隔（分钟） |
 | `max_idle_cycles` | number | `5` | 连续空闲次数阈值，超限后间隔翻倍 |
 | `enabled` | boolean | `true` | 是否启用插件 |
-| `log_enabled` | boolean | `false` | 是否启用日志 |
+| `log_level` | string | `"none"` | 日志级别：`"debug"`（详细信息）、`"warn"`（警告和错误）、`"error"`（仅错误）、`"none"`（无日志） |
 | `enable_default_prompt` | boolean | `false` | 是否启用默认提示词 |
 | `subagent_enabled` | boolean | `false` | 是否启用子代理模式 |
 | `subagent_agent_type` | string | `"explore"` | 子代理类型（仅 subagent_enabled=true 时生效） |
 | `subagent_delay_ms` | number | `60_000` | 子代理触发延迟（毫秒，仅 subagent_enabled=true 时生效） |
 | `debounce_delay_ms` | number | `5000` | idle 状态去抖确认延迟（毫秒），默认 5 秒 |
+
+### 日志级别说明
+
+`log_level` 配置项控制插件的日志输出详细程度，支持以下四个级别：
+
+| 级别 | 说明 |
+|------|------|
+| `"debug"` | 打印所有日志，包括详细的运行信息和调试信息 |
+| `"warn"` | 只打印警告和错误信息 |
+| `"error"` | 只打印错误信息 |
+| `"none"` | 不打印任何日志 |
+
+#### 兼容性说明
+
+- 如果配置文件中存在 `log_enabled` 字段但不存在 `log_level` 字段，插件会自动转换：
+  - `log_enabled: true` → `log_level: "debug"`
+  - `log_enabled: false` → `log_level: "none"`
+- 建议新配置使用 `log_level` 替代 `log_enabled`
+
+#### 日志级别映射
+
+不同的日志标签对应不同的级别：
+
+| 日志标签 | 级别 |
+|---------|------|
+| `INIT`, `DESIGN`, `STATUS`, `IDLE`, `CANDIDATE`, `TRUE_IDLE`, `ON_IDLE_EXIT`, `SKIP`, `DEBOUNCE`, `PERM`, `QUEST`, `PROMPT`, `PROMPT_DONE`, `HOT_RELOAD`, `FILES`, `WAIT`, `RESET`, `ON_IDLE`, `USER_INPUT`, `AI_REPLY`, `SCHEDULE`, `TRIGGER`, `TRIGGER_DONE`, `DISPOSE`, `INPUT_STATE`, `SCROLL_STATE`, `USER_INPUT_ACTIVITY`, `HEARTBEAT`, `IDLE_END`, `STUCK_CHECK` | `debug` |
+| `AI_STUCK` | `warn` |
+| `PROMPT_ERR`, `CANCEL`, `INTERRUPT`, `TRIGGER_ERR`, `AI_STUCK_ERR`, `USER_INTERRUPT` | `error` |
 
 ### 示例 `idle-continue.json`
 
@@ -67,7 +95,8 @@
   "watch_files": ["task.md", "wish-list.md"],
   "check_interval_minutes": 30,
   "max_idle_cycles": 5,
-  "enabled": true
+  "enabled": true,
+  "log_level": "debug"
 }
 ```
 

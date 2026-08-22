@@ -24,21 +24,19 @@
  * - `#promptInFlight`: 提示词正在发送中
  * 
  * ### 用户活动状态
- * - `#hasUncommittedInput`: 用户输入框有未提交内容
- * - `#isScrolling`: 用户正在滚动页面
+ * - 注意：OpenCode 不发送 tui.prompt.content、ui.scroll 等UI事件
+ * - 用户活动检测主要通过 chat.message hook 实现
  * 
  * ## 真空闲判断条件
  * 
  * 触发空闲事件(`#onIdle`)需要同时满足以下条件：
  * 
  * ```javascript
- * trueIdle = 
+ * trueIdle =
  *   #status === 'idle' &&           // 会话状态为空闲
  *   !#waitingPermission &&          // 不在等待权限
  *   !#waitingQuestion &&            // 不在等待问题
  *   !#interrupted &&                 // 未被用户中断
- *   !#hasUncommittedInput &&         // 输入框为空
- *   !#isScrolling &&                 // 未在滚动页面
  *   !#promptInFlight &&             // 提示词不在发送中
  *   !#idleExitSuppressor.isSuppressed() &&   // 不在idle退出抑制期间
  *   !#userMessageSuppressor.isSuppressed() // 不在用户消息抑制期间
@@ -59,9 +57,6 @@
  * | `assistant error: AbortedError` | - | interrupted=true | onUserInterrupt |
  * | `user input` | - | interrupted=false, clearSuppressors | - |
  * | `message.part.delta` | status=busy | lastActivityAt=now | - |
- * | `tui.prompt.content` | content.length>0 | hasUncommittedInput=true | - |
- * | `ui.scroll` | - | isScrolling=true | - |
- * | `ui.scroll.end` | - | isScrolling=false | - |
  * | `suppressIdleExit(duration)` | - | idleExitSuppressor.suppress(duration) | - |
  * | `suppressUserMessage(duration)` | - | userMessageSuppressor.suppress(duration) | - |
  * 
@@ -177,8 +172,6 @@ export class OpenCodeTrueIdleDetector {
   #lastActivityAt = null;
   #stuckCheckTimer = null;
   #lastUserInputActivityAt = null;
-  #hasUncommittedInput = false;
-  #isScrolling = false;
   #stuckAction = 'ignore';
   #stuckRetryPrompt = 'continue';
 
@@ -283,15 +276,23 @@ export class OpenCodeTrueIdleDetector {
   }
 
   /**
-   * 设置提示词发送状态
-   * @param {boolean} value - 提示词是否正在发送中
-   */
+    * 设置提示词发送状态
+    * @param {boolean} value - 提示词是否正在发送中
+    */
   setPromptInFlight(value) {
     this.#promptInFlight = value;
   }
 
   /**
-   * 抑制空闲退出事件（向后兼容方法）
+    * 获取提示词发送状态
+    * @returns {boolean} 提示词是否正在发送中
+    */
+  get promptInFlight() {
+    return this.#promptInFlight;
+  }
+
+  /**
+    * 抑制空闲退出事件（向后兼容方法）
    * @param {number} delayMs - 抑制持续时间（毫秒），0表示永久抑制直到手动清除
    */
   setSkipNextIdleExit(delayMs = 2000) {
@@ -489,17 +490,19 @@ export class OpenCodeTrueIdleDetector {
       this.#log('INTERRUPT', `session=${sessionID} msg=${messageID} AI response aborted by user`);
       this.#onUserInterrupt?.(sessionID);
      } else if (role === 'user') {
-      if (!this.#userMessageSuppressor.isSuppressed()) {
-        this.#log('USER_INPUT', `session=${sessionID} msg=${messageID} manual user input`);
-        if (!this.#promptInFlight) {
-          this.handleUserInput(sessionID);
-          this.#onUserInput?.(sessionID);
-        }
-      }
-    }
-    // 处理完每个用户消息后清除抑制器状态（向后兼容行为）
-    this.#userMessageSuppressor.clear();
-  }
+       if (!this.#userMessageSuppressor.isSuppressed()) {
+         this.#log('USER_INPUT', `session=${sessionID} msg=${messageID} manual user input`);
+         if (!this.#promptInFlight) {
+           this.handleUserInput(sessionID);
+           this.#onUserInput?.(sessionID);
+         }
+       } else {
+         this.#log('USER_INPUT', `session=${sessionID} msg=${messageID} user message suppressed`);
+       }
+     }
+     // 处理完每个用户消息后清除抑制器状态（向后兼容行为）
+     this.#userMessageSuppressor.clear();
+   }
 
   /**
    * 处理消息相关事件（心跳、用户输入、滚动等）
@@ -513,6 +516,9 @@ export class OpenCodeTrueIdleDetector {
     if (!event) return;
     const { type, properties = {}, data = {} } = event;
     const sid = properties.sessionID || data.sessionID || '-';
+
+    // Debug: log all message event types to help diagnose missing events
+    this.#log('DEBUG_MSG_EVENT', `Received message event: type=${type}, session=${sid}`);
 
     switch (type) {
       case 'message.updated':

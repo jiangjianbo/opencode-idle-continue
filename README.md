@@ -84,7 +84,7 @@ If no prompt file is found, the behavior depends on `enable_default_prompt`:
 | `check_interval_minutes` | number | `30` | Check interval during wait state (minutes) |
 | `max_idle_cycles` | number | `5` | Max consecutive idle cycles before interval doubling |
 | `enabled` | boolean | `true` | Whether the plugin is enabled |
-| `log_enabled` | boolean | `false` | Whether to enable logging |
+| `log_level` | string | `"none"` | Log level: `"debug"` (detailed info), `"warn"` (warnings and errors), `"error"` (errors only), `"none"` (no logging) |
 | `enable_default_prompt` | boolean | `false` | Whether to use built-in default prompt when prompt file doesn't exist |
 | `subagent_enabled` | boolean | `false` | Whether to enable subagent mode |
 | `subagent_agent_type` | string | `"explore"` | Subagent type (only when subagent_enabled=true) |
