@@ -24,8 +24,12 @@
  * - `#promptInFlight`: 提示词正在发送中
  * 
  * ### 用户活动状态
- * - 注意：OpenCode 不发送 tui.prompt.content、ui.scroll 等UI事件
- * - 用户活动检测主要通过 chat.message hook 实现
+ * - 注意：OpenCode 目前不支持 tui.prompt.content、ui.scroll 等UI事件
+ * - 用户活动检测通过以下机制实现：
+ *   - `tui.prompt.append` 事件：检测用户输入活动（输入文本时触发）
+ *   - `chat.message` hook：检测用户发送消息
+ *   - `message.part.delta` 事件：检测AI生成活动
+ * - **限制**：无法检测页面滚动活动，需要向OpenCode团队请求添加滚动事件
  * 
  * ## 真空闲判断条件
  * 
@@ -173,6 +177,9 @@ export class OpenCodeTrueIdleDetector {
   #stuckCheckTimer = null;
   #lastUserInputActivityAt = null;
   #stuckAction = 'ignore';
+  #initialIdleTimer = null;
+  #initialIdleDelay = 10 * 60 * 1000; // 10分钟初始延迟
+  #userActivitySuppressDuration = 30 * 1000; // 30秒用户活动抑制
   #stuckRetryPrompt = 'continue';
 
   /**
@@ -191,7 +198,7 @@ export class OpenCodeTrueIdleDetector {
    * @param {string} options.stuckAction - AI 卡死处置策略
    * @param {string} options.stuckRetryPrompt - AI 卡死重试提示词
    */
-  constructor({ log, onIdle, onIdleExit, onUserInterrupt, onUserInput, onUserInputActivity, onAiStuck, baseDelay = 5000, stuckThresholdMinutes = 20, stuckAction = 'ignore', stuckRetryPrompt = 'continue' }) {
+  constructor({ log, onIdle, onIdleExit, onUserInterrupt, onUserInput, onUserInputActivity, onAiStuck, baseDelay = 15000, stuckThresholdMinutes = 20, stuckAction = 'ignore', stuckRetryPrompt = 'continue', initialIdleDelayMinutes = 10, userActivitySuppressSeconds = 30 }) {
     this.#log = log;
     this.#BASE_DELAY = baseDelay;
     this.#currentDelay = baseDelay;
@@ -204,9 +211,14 @@ export class OpenCodeTrueIdleDetector {
     this.#stuckThresholdMinutes = stuckThresholdMinutes;
     this.#stuckAction = stuckAction;
     this.#stuckRetryPrompt = stuckRetryPrompt;
+    this.#initialIdleDelay = initialIdleDelayMinutes * 60 * 1000;
+    this.#userActivitySuppressDuration = userActivitySuppressSeconds * 1000;
     
     this.#idleExitSuppressor = new this.#Suppressor(log, 'IDLE_EXIT');
     this.#userMessageSuppressor = new this.#Suppressor(log, 'USER_MESSAGE');
+    
+    // 启动初始空闲倒计时
+    this.#startInitialIdleCheck();
   }
 
   /**
@@ -226,53 +238,19 @@ export class OpenCodeTrueIdleDetector {
   }
 
   /**
-   * 获取用户输入状态
-   * @returns {boolean} 是否有未提交的输入
-   */
-  get hasUncommittedInput() {
-    return this.#hasUncommittedInput;
-  }
-
-  /**
-   * 获取页面滚动状态
-   * @returns {boolean} 用户是否正在滚动页面
-   */
-  get isScrolling() {
-    return this.#isScrolling;
-  }
-
-  /**
-   * 获取 AI 卡死处置策略
-   * @returns {string} 处置策略（ignore/abort/abort_and_retry）
-   */
+    * 获取 AI 卡死处置策略
+    * @returns {string} 处置策略（ignore/abort/abort_and_retry）
+    */
   get stuckAction() {
     return this.#stuckAction;
   }
 
   /**
-   * 获取 AI 卡死重试提示词
-   * @returns {string} 重试提示词
-   */
+    * 获取 AI 卡死重试提示词
+    * @returns {string} 重试提示词
+    */
   get stuckRetryPrompt() {
     return this.#stuckRetryPrompt;
-  }
-
-  /**
-   * 设置用户输入状态
-   * @param {boolean} value - 是否有未提交的输入
-   */
-  setHasUncommittedInput(value) {
-    this.#hasUncommittedInput = value;
-    this.#log('INPUT_STATE', `Uncommitted input state: ${value}`);
-  }
-
-  /**
-   * 设置页面滚动状态
-   * @param {boolean} value - 用户是否正在滚动页面
-   */
-  setIsScrolling(value) {
-    this.#isScrolling = value;
-    this.#log('SCROLL_STATE', `Page scrolling state: ${value}`);
   }
 
   /**
@@ -376,19 +354,9 @@ export class OpenCodeTrueIdleDetector {
         return;
       }
 
-      if (this.#hasUncommittedInput) {
-        this.#log('SKIP', `session=${sessionID} user has uncommitted input, skipping idle`);
-        return;
-      }
-
-      if (this.#isScrolling) {
-        this.#log('SKIP', `session=${sessionID} user is scrolling page, skipping idle`);
-        return;
-      }
-
       const trueIdle = this.#status === 'idle' && !this.#waitingPermission && !this.#waitingQuestion;
       if (trueIdle) {
-        this.#log('TRUE_IDLE', `session=${sessionID} status=idle perm=off quest=off input=empty scroll=off delay=${d}`);
+        this.#log('TRUE_IDLE', `session=${sessionID} status=idle perm=off quest=off delay=${d}`);
         this.#currentDelay *= 2;
         this.#onIdle(sessionID);
       } else {
@@ -428,13 +396,43 @@ export class OpenCodeTrueIdleDetector {
   }
 
   /**
-   * 记录用户输入活动时间
-   * @private
-   */
+    * 记录用户输入活动时间
+    * @private
+    */
   #recordUserInputActivity() {
     this.#lastUserInputActivityAt = Date.now();
     this.#log('USER_INPUT_ACTIVITY', `user input detected at ${this.#lastUserInputActivityAt}`);
     this.#onUserInputActivity?.();
+  }
+
+  /**
+    * 启动初始空闲检查
+    * @private
+    */
+  #startInitialIdleCheck() {
+    if (this.#initialIdleTimer) {
+      clearTimeout(this.#initialIdleTimer);
+    }
+    
+    this.#log('INIT', `Starting initial idle check: will trigger TRUE_IDLE after ${this.#initialIdleDelay / 1000 / 60} minutes if no user activity`);
+    
+    this.#initialIdleTimer = setTimeout(() => {
+      this.#initialIdleTimer = null;
+      
+      // 检查是否已被用户活动重置
+      const timeSinceLastActivity = this.#lastUserInputActivityAt 
+        ? Date.now() - this.#lastUserInputActivityAt 
+        : Infinity;
+      
+      if (timeSinceLastActivity >= this.#initialIdleDelay) {
+        this.#log('TRUE_IDLE', `Initial idle period completed, no user activity for ${this.#initialIdleDelay / 1000 / 60} minutes`);
+        this.#onIdle('initial');
+      } else {
+        // 如果有用户活动，重新等待
+        this.#log('INIT', `User activity detected, restarting initial idle check`);
+        this.#startInitialIdleCheck();
+      }
+    }, this.#initialIdleDelay);
   }
 
   /**
@@ -452,9 +450,9 @@ export class OpenCodeTrueIdleDetector {
   }
 
   /**
-   * 处理用户输入事件
-   * @param {string} sessionID - 会话 ID
-   */
+    * 处理用户输入事件
+    * @param {string} sessionID - 会话 ID
+    */
   handleUserInput(sessionID) {
     if (this.#pendingCheck) {
       clearTimeout(this.#pendingCheck);
@@ -469,7 +467,19 @@ export class OpenCodeTrueIdleDetector {
     this.#waitingQuestion = false;
     this.#status = 'busy';
     this.#currentDelay = this.#BASE_DELAY;
-    this.#log('RESET', `session=${sessionID} state reset on user input`);
+    
+    // 重置初始空闲检查
+    if (this.#initialIdleTimer) {
+      clearTimeout(this.#initialIdleTimer);
+      this.#initialIdleTimer = null;
+      this.#startInitialIdleCheck();
+    }
+    
+    // 用户活动后抑制30秒
+    this.#userMessageSuppressor.suppress(this.#userActivitySuppressDuration, 'user activity suppression');
+    this.#idleExitSuppressor.suppress(this.#userActivitySuppressDuration, 'user activity suppression');
+    
+    this.#log('RESET', `session=${sessionID} state reset on user input, idle detection suppressed for ${this.#userActivitySuppressDuration / 1000} seconds`);
   }
 
   /**
@@ -521,6 +531,11 @@ export class OpenCodeTrueIdleDetector {
     this.#log('DEBUG_MSG_EVENT', `Received message event: type=${type}, session=${sid}`);
 
     switch (type) {
+      // 用户输入活动检测 - 这是目前可用的关键事件
+      case 'tui.prompt.append':
+        this.#recordUserInputActivity();
+        this.#log('USER_INPUT_ACTIVITY', `User typing detected via tui.prompt.append`);
+        break;
       case 'message.updated':
       case 'message.part.updated':
       case 'message.part.delta':
@@ -528,20 +543,6 @@ export class OpenCodeTrueIdleDetector {
           this.#recordActivity();
           this.#log('HEARTBEAT', `session=${sid} activity detected at ${this.#lastActivityAt}`);
         }
-        break;
-      case 'tui.prompt.append':
-        this.#recordUserInputActivity();
-        break;
-      case 'tui.prompt.content':
-        const content = properties.content || data.content;
-        const hasContent = content !== undefined && content !== null && content.length > 0;
-        this.setHasUncommittedInput(hasContent);
-        break;
-      case 'ui.scroll':
-        this.setIsScrolling(true);
-        break;
-      case 'ui.scroll.end':
-        this.setIsScrolling(false);
         break;
     }
   }
@@ -580,6 +581,13 @@ export class OpenCodeTrueIdleDetector {
             this.#log('IDLE_END', `session=${sid} idle -> busy`);
             this.#onIdleExit?.(sid);
           }
+        }
+
+        // 修复：处理会话开始时就是 busy 状态的情况
+        if (s.type === 'busy' && this.#lastActivityAt === null) {
+          this.#lastActivityAt = Date.now();
+          this.#scheduleStuckCheck(sid);
+          this.#log('INIT', `session=${sid} initial busy state, stuck check started`);
         }
 
         if (s.type === 'busy' && this.#pendingCheck) {
@@ -639,8 +647,8 @@ export class OpenCodeTrueIdleDetector {
   }
 
   /**
-   * 清理资源，释放定时器
-   */
+    * 清理资源，释放定时器
+    */
   dispose() {
     this.#log('DISPOSE', 'Cleaning up detector resources');
     
@@ -651,6 +659,10 @@ export class OpenCodeTrueIdleDetector {
     if (this.#stuckCheckTimer) {
       clearTimeout(this.#stuckCheckTimer);
       this.#stuckCheckTimer = null;
+    }
+    if (this.#initialIdleTimer) {
+      clearTimeout(this.#initialIdleTimer);
+      this.#initialIdleTimer = null;
     }
     
     // 清理抑制器（Suppressor内部会清理自己的定时器）

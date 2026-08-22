@@ -32,10 +32,12 @@ const DEFAULT_CONFIG = {
   subagent_enabled: false,
   subagent_agent_type: 'explore',
   subagent_delay_ms: 60_000,
-  debounce_delay_ms: 5000,
+  debounce_delay_ms: 60000,
   stuck_threshold_minutes: 20,
   ai_stuck_action: 'ignore',
   ai_stuck_retry_prompt: 'continue',
+  initial_idle_delay_minutes: 10,
+  user_activity_suppress_seconds: 300,
 };
 
 /**
@@ -242,6 +244,8 @@ const server = async (input) => {
     stuckThresholdMinutes: config.stuck_threshold_minutes,
     stuckAction: config.ai_stuck_action,
     stuckRetryPrompt: config.ai_stuck_retry_prompt,
+    initialIdleDelayMinutes: config.initial_idle_delay_minutes || 10,
+    userActivitySuppressSeconds: config.user_activity_suppress_seconds || 30,
     onIdle: async (sessionID) => {
       if (!config.enabled) {
         log('SKIP', 'Plugin disabled');
@@ -404,6 +408,7 @@ const server = async (input) => {
   log('INIT', `Plugin idle-continue initialized | directory=${directory}`);
   log('DESIGN', JSON.stringify({
     signals: ['session.status', 'session.idle', 'permission.asked', 'permission.replied', 'question.asked', 'question.replied', 'question.rejected', 'chat.message', 'message.updated', 'message.part.updated', 'message.part.delta', 'tui.prompt.append'],
+    limitations: 'OpenCode currently does not provide tui.prompt.content or ui.scroll events. User activity is detected via tui.prompt.append and chat.message hooks.',
     subagent_enabled: config.subagent_enabled,
     rule: config.subagent_enabled 
       ? 'TRUE_IDLE -> wait delay -> subagent trigger via Task tool'

@@ -11,8 +11,8 @@ OpenCode插件，在空闲时自动发送提示词继续处理任务。
 - **提示词热重载**：每次使用`prompt_file`时检查文件是否已修改。未修改则使用缓存内容，已修改则重新读入并更新缓存，无需重启插件
 - **文件变更监控**：维护一个检测文件列表，监控这些文件的内容/时间戳是否变化
 - **等待状态管理**：如果发送提示词后检测文件列表中的文件没有变化，则进入等待状态，支持间隔退避机制
-- **用户输入检测**：实时检测用户输入活动，即使用户输入后最终删除了没有发送也能检测到
-- **页面滚动检测**：检测用户是否在滚动页面内容，滚动时暂停空闲检测
+- **用户活动抑制**：用户发送消息后，在配置的时间内（默认5分钟）抑制空闲检测
+- **初始空闲延迟**：插件启动后等待指定时间（默认10分钟）才开始空闲检测
 - **AI卡死检测与自动恢复**：监控AI响应活动，自动检测并恢复卡死状态
 - **两种工作模式**：
   - **传统模式**：直接发送提示词，支持文件监控和间隔退避
@@ -84,12 +84,14 @@ bash install-local.sh
 | `check_interval_minutes` | number | `30` | 等待状态下的检测间隔（分钟） |
 | `max_idle_cycles` | number | `5` | 连续空闲次数阈值，超限后间隔翻倍 |
 | `enabled` | boolean | `true` | 是否启用插件 |
-| `log_enabled` | boolean | `false` | 是否启用日志 |
-| `enable_default_prompt` | boolean | `false` | 提示词文件不存在时是否使用内置默认提示词 |
+| `log_level` | string | `"none"` | 日志级别：`"debug"`（详细信息）、`"warn"`（警告和错误）、`"error"`（仅错误）、`"none"`（无日志） |
+| `enable_default_prompt` | boolean | `false` | 提示词文件不存在时是否启用默认提示词 |
 | `subagent_enabled` | boolean | `false` | 是否启用子代理模式 |
 | `subagent_agent_type` | string | `"explore"` | 子代理类型（仅 subagent_enabled=true 时生效） |
 | `subagent_delay_ms` | number | `60_000` | 子代理触发延迟（毫秒，仅 subagent_enabled=true 时生效） |
-| `debounce_delay_ms` | number | `5000` | idle 状态去抖确认延迟（毫秒），默认 5 秒 |
+| `debounce_delay_ms` | number | `60000` | idle 状态去抖确认延迟（毫秒），默认 60 秒（1分钟） |
+| `initial_idle_delay_minutes` | number | `10` | 初始空闲延迟时间（分钟），默认 10 分钟 |
+| `user_activity_suppress_seconds` | number | `300` | 用户活动抑制时间（秒），默认 300 秒（5分钟） |
 | `stuck_threshold_minutes` | number | `20` | AI 卡死检测阈值（分钟，默认 20 分钟） |
 | `ai_stuck_action` | string | `"ignore"` | AI 卡死处置策略：`"ignore"`、`"abort"` 或 `"abort_and_retry"` |
 | `ai_stuck_retry_prompt` | string | `"continue"` | ai_stuck_action 为 `"abort_and_retry"` 时的重发提示词 |
@@ -103,6 +105,9 @@ bash install-local.sh
   "check_interval_minutes": 30,
   "max_idle_cycles": 5,
   "enabled": true,
+  "debounce_delay_ms": 60000,
+  "initial_idle_delay_minutes": 10,
+  "user_activity_suppress_seconds": 300,
   "stuck_threshold_minutes": 20,
   "ai_stuck_action": "abort_and_retry",
   "ai_stuck_retry_prompt": "continue"
@@ -115,24 +120,25 @@ bash install-local.sh
 
 1. **空闲检测**：监控系统空闲状态。当 opencode 处于空闲状态时触发后续逻辑。
 2. **用户活动检测**：
-   - **输入检测**：实时检测用户输入活动，即使用户输入后最终删除了没有发送也能检测到
-   - **滚动检测**：检测用户是否在滚动页面内容，滚动时暂停空闲检测
-   - 用户正在输入或滚动时跳过空闲检测
+   - **消息检测**：检测用户发送的消息（通过 `chat.message` hook）
+   - **活动抑制**：用户活动后，在配置的时间内（默认 5 分钟）抑制空闲检测
+   - **初始空闲延迟**：插件启动后等待指定时间（默认 10 分钟）才开始首次空闲检测
+   - **去抖延迟**：确认空闲状态的可配置延迟（默认 1 分钟）
 3. **发送提示词**：从指定的 markdown 文件中读取提示内容并发送给 opencode 继续处理。如果提示词文件不存在：
-   - 当 `enable_default_prompt` 为 `false`（默认）时，不发送任何消息
-   - 当 `enable_default_prompt` 为 `true` 时，发送内置默认提示词
+    - 当 `enable_default_prompt` 为 `false`（默认）时，不发送任何消息
+    - 当 `enable_default_prompt` 为 `true` 时，发送内置默认提示词
 4. **AI 卡死检测与自动恢复**：
-   - 通过心跳事件（消息更新、部分更新、增量更新）监控 AI 响应活动
-   - 当会话处于 busy 状态但超过配置阈值（默认 20 分钟）无活动时检测卡死状态
-   - 可配置的恢复策略：
-     - `"ignore"` - 不做任何处理（默认）
-     - `"abort"` - 中断卡死的会话
-     - `"abort_and_retry"` - 中断会话，等待 30 秒，然后发送重试提示词
+    - 通过心跳事件（消息更新、部分更新、增量更新）监控 AI 响应活动
+    - 当会话处于 busy 状态但超过配置阈值（默认 20 分钟）无活动时检测卡死状态
+    - 可配置的恢复策略：
+      - `"ignore"` - 不做任何处理（默认）
+      - `"abort"` - 中断卡死的会话
+      - `"abort_and_retry"` - 中断会话，等待 30 秒，然后发送重试提示词
 5. **提示词热重载**：每次使用 `prompt_file` 时检查文件是否已修改。未修改则使用缓存内容，已修改则重新读入并更新缓存，无需重启插件。
 6. **文件变更监控**：维护一个检测文件列表，监控这些文件的内容/时间戳是否变化。
 7. **等待状态**：如果发送提示词后检测文件列表中的文件没有变化，则进入等待状态。等待状态需要同时满足：
-   - 系统持续空闲
-   - 检测文件列表中的文件没有改变
+    - 系统持续空闲
+    - 检测文件列表中的文件没有改变
 8. **间隔退避**：在等待状态下，每隔一定时间间隔（默认 30 分钟）发送一次提示词。如果连续 5 次检测仍然处于空闲状态（文件未变化），则下一次的等待间隔翻倍。
 
 ### 模式 2：子代理模式

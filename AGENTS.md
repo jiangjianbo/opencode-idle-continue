@@ -9,7 +9,12 @@
 ### 模式 1：传统模式（默认）
 
 1. **空闲检测**：监控系统空闲状态。当 opencode 处于空闲状态时触发后续逻辑。
-2. **发送提示词**：寻找提示词文档，读取提示内容并发送给 opencode 继续处理。提示词文件查找顺序（从当前目录开始逐级向上，每级目录检查两个位置）：
+2. **用户活动检测**：
+   - **消息检测**：检测用户发送的消息（通过 `chat.message` hook）
+   - **活动抑制**：用户活动后，在配置的时间内（默认 5 分钟）抑制空闲检测
+   - **初始空闲延迟**：插件启动后等待指定时间（默认 10 分钟）才开始首次空闲检测
+   - **去抖延迟**：确认空闲状态的可配置延迟（默认 1 分钟）
+3. **发送提示词**：寻找提示词文档，读取提示内容并发送给 opencode 继续处理。提示词文件查找顺序（从当前目录开始逐级向上，每级目录检查两个位置）：
    - `{dir}/{prompt_file}`（如 `idle-prompt.md`）
    - `{dir}/.opencode/{prompt_file}`（如 `.opencode/idle-prompt.md`）
    
@@ -20,12 +25,12 @@
    如果提示词文件不存在：
    - 当 `enable_default_prompt` 为 `false`（默认）时，不发送任何消息
    - 当 `enable_default_prompt` 为 `true` 时，发送内置的默认提示词
-3. **提示词热重载**：每次使用 `prompt_file` 时检查文件是否已修改。未修改则使用缓存内容，已修改则重新读入并更新缓存，无需重启插件。
-4. **文件变更监控**：维护一个检测文件列表，监控这些文件的内容/时间戳是否变化。
-5. **等待状态**：如果发送提示词后检测文件列表中的文件没有变化，则进入等待状态。等待状态需要同时满足：
+4. **提示词热重载**：每次使用 `prompt_file` 时检查文件是否已修改。未修改则使用缓存内容，已修改则重新读入并更新缓存，无需重启插件。
+5. **文件变更监控**：维护一个检测文件列表，监控这些文件的内容/时间戳是否变化。
+6. **等待状态**：如果发送提示词后检测文件列表中的文件没有变化，则进入等待状态。等待状态需要同时满足：
    - 系统持续空闲
    - 检测文件列表中的文件没有改变
-6. **间隔退避**：在等待状态下，每隔一定时间间隔（默认 30 分钟）发送一次提示词。如果连续 5 次检测仍然处于空闲状态（文件未变化），则下一次的等待间隔翻倍。
+7. **间隔退避**：在等待状态下，每隔一定时间间隔（默认 30 分钟）发送一次提示词。如果连续 5 次检测仍然处于空闲状态（文件未变化），则下一次的等待间隔翻倍。
 
 ### 模式 2：子代理模式
 
@@ -57,7 +62,9 @@
 | `subagent_enabled` | boolean | `false` | 是否启用子代理模式 |
 | `subagent_agent_type` | string | `"explore"` | 子代理类型（仅 subagent_enabled=true 时生效） |
 | `subagent_delay_ms` | number | `60_000` | 子代理触发延迟（毫秒，仅 subagent_enabled=true 时生效） |
-| `debounce_delay_ms` | number | `5000` | idle 状态去抖确认延迟（毫秒），默认 5 秒 |
+| `debounce_delay_ms` | number | `60000` | idle 状态去抖确认延迟（毫秒），默认 60 秒（1分钟） |
+| `initial_idle_delay_minutes` | number | `10` | 初始空闲延迟时间（分钟），默认 10 分钟 |
+| `user_activity_suppress_seconds` | number | `300` | 用户活动抑制时间（秒），默认 300 秒（5分钟） |
 
 ### 日志级别说明
 
@@ -96,7 +103,10 @@
   "check_interval_minutes": 30,
   "max_idle_cycles": 5,
   "enabled": true,
-  "log_level": "debug"
+  "log_level": "debug",
+  "debounce_delay_ms": 60000,
+  "initial_idle_delay_minutes": 10,
+  "user_activity_suppress_seconds": 300
 }
 ```
 
@@ -455,7 +465,7 @@ WaitState.enter()
 
 ### 去抖机制
 
-- `scheduleCheck(sessionID, delay)` 用 `setTimeout` 实现，默认延迟为 `debounce_delay_ms`（默认 5000ms）
+- `scheduleCheck(sessionID, delay)` 用 `setTimeout` 实现，默认延迟为 `debounce_delay_ms`（默认 60000ms）
 - 已有 pending 则 `clearTimeout` 重置
 - 到期后验证 `status === 'idle' && !waitingPermission && !waitingQuestion`
 - 若中途变为 busy，立即取消
