@@ -359,4 +359,37 @@ describe('Integration: server()', () => {
       await env.cleanup();
     }
   });
+
+  it('should not create .log directory when log_level is none', async () => {
+    const dir = createTempDir();
+    try {
+      const config = {
+        prompt_file: 'prompt.md',
+        watch_files: ['task.md'],
+        check_interval_minutes: 30,
+        max_idle_cycles: 5,
+        enabled: true,
+        log_level: 'none',
+        debounce_delay_ms: 200,
+      };
+      writeJSON(dir, 'idle-continue.json', config);
+      writeFile(dir, 'prompt.md', 'test prompt');
+
+      const client = {
+        session: {
+          prompt: async () => {},
+        },
+      };
+
+      const hooks = await server({ directory: dir, client });
+
+      // 检查 .log 目录是否被创建
+      const logDirExists = fs.existsSync(path.join(dir, '.log'));
+      expect(logDirExists).toBe(false);
+
+      await hooks.dispose();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

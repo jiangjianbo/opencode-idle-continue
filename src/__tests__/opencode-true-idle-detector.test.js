@@ -274,7 +274,9 @@ describe('OpenCodeTrueIdleDetector', () => {
 
       expect(det.detector.interrupted).toBe(false);
       expect(det.log).toHaveBeenCalledWith('IDLE_END', 'session=s1 handleUserInput while idle');
-      expect(det.log).toHaveBeenCalledWith('RESET', 'session=s1 state reset on user input');
+      expect(det.log).toHaveBeenCalledWith('RESET', expect.stringContaining('session=s1 state reset on user input'));
+      expect(det.log).toHaveBeenCalledWith('INIT', expect.stringContaining('Starting initial idle check'));
+      expect(det.log).toHaveBeenCalledWith('USER_MESSAGE', expect.stringContaining('suppressed for 30000ms'));
     });
   });
 
@@ -509,7 +511,7 @@ describe('OpenCodeTrueIdleDetector', () => {
         event: { type: 'tui.prompt.append', properties: { sessionID: 's1' } },
       });
 
-      expect(det.log).toHaveBeenCalledWith('USER_INPUT_ACTIVITY', expect.stringContaining('user input detected'));
+      expect(det.log).toHaveBeenCalledWith('USER_INPUT_ACTIVITY', expect.stringContaining('User typing detected via tui.prompt.append'));
       expect(det.onUserInputActivity).toHaveBeenCalled();
     });
 
@@ -520,6 +522,9 @@ describe('OpenCodeTrueIdleDetector', () => {
 
       expect(det.onUserInputActivity).toHaveBeenCalledTimes(1);
     });
+
+    // Note: tui.prompt.content event does not exist in OpenCode
+    // Users are asking for this event to be added to OpenCode
   });
 
   describe('AI stuck detection', () => {
@@ -636,94 +641,9 @@ describe('OpenCodeTrueIdleDetector', () => {
     });
   });
 
-  describe('user input state detection', () => {
-    it('should set hasUncommittedInput to true when tui.prompt.content has content', () => {
-      det.detector.handleMessageEvent({
-        event: { type: 'tui.prompt.content', properties: { content: 'test input' } },
-      });
-
-      expect(det.detector.hasUncommittedInput).toBe(true);
-      expect(det.log).toHaveBeenCalledWith('INPUT_STATE', 'Uncommitted input state: true');
-    });
-
-    it('should set hasUncommittedInput to false when tui.prompt.content is empty', () => {
-      det.detector.handleMessageEvent({
-        event: { type: 'tui.prompt.content', properties: { content: '' } },
-      });
-
-      expect(det.detector.hasUncommittedInput).toBe(false);
-      expect(det.log).toHaveBeenCalledWith('INPUT_STATE', 'Uncommitted input state: false');
-    });
-
-    it('should skip idle detection when hasUncommittedInput is true', async () => {
-      det.detector.setHasUncommittedInput(true);
-
-      det.detector.handleEvent({
-        event: { type: 'session.status', properties: { sessionID: 's1', status: { type: 'idle' } } },
-      });
-
-      vi.advanceTimersByTime(200);
-      await flush();
-
-      expect(det.log).toHaveBeenCalledWith('SKIP', expect.stringContaining('user has uncommitted input'));
-      expect(det.onIdle).not.toHaveBeenCalled();
-    });
-
-    it('should allow setHasUncommittedInput to change input state', () => {
-      det.detector.setHasUncommittedInput(true);
-      expect(det.detector.hasUncommittedInput).toBe(true);
-
-      det.detector.setHasUncommittedInput(false);
-      expect(det.detector.hasUncommittedInput).toBe(false);
-    });
-  });
-
-  describe('page scroll detection', () => {
-    it('should set isScrolling to true on ui.scroll event', () => {
-      det.detector.handleMessageEvent({
-        event: { type: 'ui.scroll', properties: { sessionID: 's1' } },
-      });
-
-      expect(det.detector.isScrolling).toBe(true);
-      expect(det.log).toHaveBeenCalledWith('SCROLL_STATE', 'Page scrolling state: true');
-    });
-
-    it('should set isScrolling to false on ui.scroll.end event', () => {
-      det.detector.handleMessageEvent({
-        event: { type: 'ui.scroll', properties: { sessionID: 's1' } },
-      });
-      expect(det.detector.isScrolling).toBe(true);
-
-      det.detector.handleMessageEvent({
-        event: { type: 'ui.scroll.end', properties: { sessionID: 's1' } },
-      });
-
-      expect(det.detector.isScrolling).toBe(false);
-      expect(det.log).toHaveBeenCalledWith('SCROLL_STATE', 'Page scrolling state: false');
-    });
-
-    it('should skip idle detection when isScrolling is true', async () => {
-      det.detector.setIsScrolling(true);
-
-      det.detector.handleEvent({
-        event: { type: 'session.status', properties: { sessionID: 's1', status: { type: 'idle' } } },
-      });
-
-      vi.advanceTimersByTime(200);
-      await flush();
-
-      expect(det.log).toHaveBeenCalledWith('SKIP', expect.stringContaining('user is scrolling page'));
-      expect(det.onIdle).not.toHaveBeenCalled();
-    });
-
-    it('should allow setIsScrolling to change scroll state', () => {
-      det.detector.setIsScrolling(true);
-      expect(det.detector.isScrolling).toBe(true);
-
-      det.detector.setIsScrolling(false);
-      expect(det.detector.isScrolling).toBe(false);
-    });
-  });
+  // Note: user input state detection and page scroll detection tests removed
+  // because tui.prompt.content and ui.scroll events do not exist in OpenCode
+  // See EVENT_LIMITATIONS.md for details and alternative solutions
 
   describe('AI stuck action configuration', () => {
     it('should provide stuck action and retry prompt in onAiStuck callback', () => {
